@@ -97,7 +97,7 @@ rather than starting from the stock template. dotfiles runs Sandcastle too: its 
 no .NET, whose image carries the repo-ci-baseline skill's test tools instead of the SDK.
 
 The repo-ci-baseline Template now carries Sandcastle's shared files: its code (`main.mts`, `status.mts` and `lib/`), config, intake and
-critique prompts (Owned), and its per-repo values (`lib/repo-config.mts`), role prompts, Dockerfile, check-paths list and `package.json`
+critique, plan, review and role prompts (Owned), and its per-repo values (`lib/repo-config.mts`), `roles/shared-rules.md`, `roles/skills.md`, Dockerfile, check-paths list and `package.json`
 (Seed). In a Baseline repo, create `.sandcastle/` and Apply again to get them. The skill's `references/sandcastle.md` says
 what each file is and how an existing Sandcastle repo migrates.
 
@@ -177,21 +177,25 @@ would hand your GitHub token to the agents. Blazor-Server's `main.mts` refuses t
 
 ### 6. Adapt the prompts
 
-Edit `.sandcastle/plan-prompt.md`, `implement-prompt.md` and `review-prompt.md` for the repo:
+The prompts are Owned and read the same in every repo, so put the repo's own text in `.sandcastle/roles/shared-rules.md` (every role reads it) and `.sandcastle/roles/skills.md` (the skills block the tester,
+developer and UI developer read) instead of editing `plan-prompt.md`, `review-prompt.md` or a role's prompt. The Seed `roles/shared-rules.md` already tells every role never to push, run `gh` or write
+to GitHub (the host does that); keep that rule when you write your own. The host drops issues whose branch has an open pull request before the planner sees them.
+In `roles/shared-rules.md`:
 
 - Use the repo's build and test commands (`dotnet build <Solution>.slnx`, the test projects) instead of `npm`.
 - Point the agents at `CONTEXT.md`, `docs/adr/` and the coding standards, and have them work test-first.
 - Use the repo's commit format, `<type>(<scope>): <Summary>` with `Refs #<id>`.
-- Tell the implementer not to push, open a pull request or close the issue; the host does that.
-- Have the planner skip issues whose branch already has an open pull request.
-- Copy any skills the agents need into the repo's `.claude/skills/`. The sandbox can't see `~/.claude/skills`.
+
+Skills are set up apart from the shared rules. Install the skills the agents need on the host in `~/.claude/skills`; the sandbox mounts them read-only. Name each one in `SANDBOX_SKILLS` in
+`lib/repo-config.mts` and list them in `roles/skills.md` under the same names: the skills consistency check fails when the two lists differ. Point agents at a repo-local skill (one under the
+repo's `.claude/skills/` that isn't in `SANDBOX_SKILLS`) from `roles/shared-rules.md`, not from `roles/skills.md`.
 
 ### 7. Adapt the orchestration
 
 The stock template merges into your checked-out branch and closes the issue with no pull request. Replace that
 with Blazor-Server's `main.mts` and `lib/` (gate, plan, critique, build, branches, GitHub, config), plus the
-`critique-prompt.md` and `roles/` that `lib/` loads. Adapt those two as in step 6: `roles/shared-rules.md` goes
-into every role's prompt and names Blazor-Server's solution, gate and commit rules. The orchestration:
+`critique-prompt.md` and `roles/` that `lib/` loads. `critique-prompt.md` and the role prompts are Owned and used as they are; only `roles/shared-rules.md` and
+`roles/skills.md` are adapted, as in step 6: `roles/shared-rules.md` goes into every role's prompt and names Blazor-Server's solution, gate and commit rules. The orchestration:
 
 - Hold back issues whose blockers haven't landed or that already have an open pull request.
 - Run `scripts/gate.sh` in the sandbox after the implementer and again after the reviewer, with a gate-fixer

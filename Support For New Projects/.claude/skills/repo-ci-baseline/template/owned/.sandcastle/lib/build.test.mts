@@ -3779,7 +3779,7 @@ describe("build's console.error lines", () => {
   }
 });
 
-// The Seed review-prompt.md says what the host refuses in a PR description
+// The Owned review-prompt.md says what the host refuses in a PR description
 // through PR_BODY_RULES (lib/prompts.mts), so each refusal in
 // reviewerPrBody (lib/build.mts) must be named there, or the reviewer writes
 // text the host drops and the PR gets the generic body unnoticed.

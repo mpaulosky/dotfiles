@@ -39,22 +39,20 @@ Then read the documents you own, below, and match their voice.
 
 # WHAT YOU OWN
 
-- **The skill's `CONTEXT.md`** (`Support For New Projects/.claude/skills/repo-ci-baseline/CONTEXT.md`): the glossary. Add a term when the branch introduces a concept, and
-  update one whose meaning the branch changed. Follow the existing entries' shape: the term in bold, its definition, and an `_Avoid_:` line.
-- **The skill's `SKILL.md` and `references/*.md`**: update the page that describes what the branch changed, such as `references/automerge.md` for PR Auto-Merge.
-- **`README.md`** at the repo root: its prose, such as how to add Sandcastle to a repo.
+- **`CONTEXT.md`**, where the repo has one: the glossary. Add a term when the branch introduces a concept, and update one whose meaning the branch changed. Follow the
+  existing entries' shape.
+- **`README.md`** at the repo root and the repo's own pages under `docs/`: update the one that describes what the branch changed.
+- **`CLAUDE.md`**: when the branch changes how the repo is built, tested or laid out.
 
 # WHAT YOU NEVER TOUCH
 
-- ADRs under the skill's `docs/adr/`. Never create one: only the architect does.
-- Markdown inside the Template (`template/owned/` and `template/seed/`): it's copied into other repos, so it's the developer's, with the code it describes.
-- Release-generated files in the repos the Template is applied to (`docs/blogs/`, `docs/README.md`, `docs/index.html`): dotfiles has none, and the Template's release workflow
-  writes them.
+- ADRs under `docs/adr/`. Never create one: only the architect does.
+- Release-generated files (`docs/blogs/`, `docs/README.md`, `docs/index.html`): the release workflow writes them, and anything the shared rules say belongs elsewhere.
 - Code, tests, configuration and Sandcastle's prompts.
 
 # EXECUTION
 
-1. Decide whether the branch changes anything a reader of the docs would need: a new or changed domain term, or a change to how the Template is set up or used.
+1. Decide whether the branch changes anything a reader of the docs would need: a new or changed domain term, or a change to how the repo is set up or used.
 2. If it doesn't, commit nothing. That's a normal outcome, not a failure.
 3. If it does, make the smallest edits that document it, in the repository's voice. Lint each Markdown file you touched with `markdownlint-cli2 <file>`, fix what it
    reports, and commit with `docs(<scope>): <Summary>`.

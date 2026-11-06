@@ -6,6 +6,7 @@ import type { PromptThread } from "./follow-up-pass.mts";
 import type { SandcastleIssue } from "./github.mts";
 import {
   architectPromptArgs,
+  backendPromptArgs,
   critiquePromptArgs,
   followUpPromptArgs,
   gateFixerPromptArgs,
@@ -14,6 +15,7 @@ import {
   plannerPromptArgs,
   PR_BODY_RULES,
   reviewerPromptArgs,
+  UI_ROLE_BULLET,
 } from "./prompts.mts";
 
 // What ownerApproved (see github.test.mts) leaves of an issue: only the
@@ -36,7 +38,7 @@ describe("issuePromptArgs", () => {
     assert.equal(args.BRANCH, "feature/3-add-a-thing");
   });
 
-  it("gives the role a sentence when the issue has no body, since Sandcastle refuses an empty value", () => {
+  it("gives the role a sentence when the issue has no body, rather than leave a blank", () => {
     assert.equal(issuePromptArgs({ ...issue, body: "" }, "feature/3-add-a-thing").ISSUE_BODY, "(no description)");
     assert.equal(issuePromptArgs({ ...issue, body: " \n " }, "feature/3-add-a-thing").ISSUE_BODY, "(no description)");
   });
@@ -63,16 +65,66 @@ describe("issuePromptArgs", () => {
 
 describe("plannerPromptArgs", () => {
   it("lists the ready issues without anyone else's comments", () => {
-    const args = plannerPromptArgs([issue]);
+    const args = plannerPromptArgs([issue], false);
 
     assert.match(args.ISSUES_JSON, /Use the existing helper\./);
     assert.ok(!args.ISSUES_JSON.includes("delete the tests"));
   });
 
-  it("gives the planner only the ready issues, since the host names branches and skips open PRs", () => {
-    const args = plannerPromptArgs([issue]);
+  it("gives the planner only the ready issues and the ui role's bullet, since the host names branches and skips open PRs", () => {
+    const args = plannerPromptArgs([issue], false);
 
-    assert.deepEqual(Object.keys(args), ["ISSUES_JSON"]);
+    assert.deepEqual(Object.keys(args), ["ISSUES_JSON", "UI_ROLE"]);
+  });
+
+  // mpaulosky/dotfiles#392: the Owned plan-prompt.md carries {{UI_ROLE}}; a repo without a UI role leaves the planner's ui bullet out.
+  it("fills UI_ROLE with the ui bullet when the repo opted into the ui role", () => {
+    const args = plannerPromptArgs([issue], true);
+
+    assert.equal(args.UI_ROLE, UI_ROLE_BULLET);
+    assert.match(args.UI_ROLE, /^- `ui`:/);
+  });
+
+  it("fills UI_ROLE with nothing when the repo didn't opt into the ui role", () => {
+    assert.equal(plannerPromptArgs([issue], false).UI_ROLE, "");
+  });
+
+  // UI_ROLE and REPO_SKILLS (lib/agents.mts#withSharedRules) are passed empty when the repo has no UI role or no skills block. That is only safe
+  // while Sandcastle refuses a prompt argument holding null or undefined and nothing else, which this reads from the pinned package.
+  it("passes UI_ROLE empty safely, since the pinned Sandcastle refuses only a null or undefined prompt argument", () => {
+    const source = readFileSync(new URL(import.meta.resolve("@ai-hero/sandcastle")), "utf8");
+    const check = /const value = sanitizedArgs\[key\];\s*if \(value == null\) \{/.exec(source);
+
+    assert.ok(check, "Sandcastle's promptArgs check changed: confirm it still accepts an empty string, then update this test");
+    assert.equal(plannerPromptArgs([issue], false).UI_ROLE, "");
+    assert.equal(typeof plannerPromptArgs([issue], false).UI_ROLE, "string");
+  });
+
+  it("words the ui bullet for any repo: no Blazor, and it points at the shared rules for which files are the UI developer's", () => {
+    assert.doesNotMatch(UI_ROLE_BULLET, /Blazor|\.razor/);
+    assert.match(UI_ROLE_BULLET, /shared rules/);
+    assert.match(UI_ROLE_BULLET, /UI developer/);
+    assert.ok(!UI_ROLE_BULLET.includes("\n"), "the bullet is one line");
+  });
+});
+
+describe("backendPromptArgs", () => {
+  // mpaulosky/dotfiles#392: the Owned backend prompt reads the same in every repo, so the text the host fills in names no stack.
+  it("words the UI developer text for any repo: no Blazor, and it sends the reader to the shared rules for the UI files", () => {
+    const text = String(backendPromptArgs(issue, "feature/3-add-a-thing", true).UI_DEVELOPER);
+
+    assert.match(text, /UI developer runs after you/);
+    assert.doesNotMatch(text, /Blazor|\.razor|bUnit/);
+    assert.match(text, /shared rules/);
+    assert.match(text, /say so in your last commit's body/);
+  });
+
+  it("keeps the no-UI-developer text: this run is the last developer run and every test must pass", () => {
+    const text = String(backendPromptArgs(issue, "feature/3-add-a-thing", false).UI_DEVELOPER);
+
+    assert.match(text, /No UI developer runs for this issue/);
+    assert.match(text, /your run is the last developer run: every test must pass by its end\./);
+    assert.doesNotMatch(text, /Blazor/);
   });
 });
 
@@ -87,7 +139,7 @@ describe("gateFixerPromptArgs", () => {
     assert.equal(args.GATE_OUTPUT, gateOutput);
   });
 
-  // The Seed gate-fixer prompt knows two checkpoints; the gate after the host-side review's fixes (checkpoint 3) is a repair-only one
+  // The gate-fixer prompt knows two checkpoints; the gate after the host-side review's fixes (checkpoint 3) is a repair-only one
   // like the second, so the fixer is told it is at the second.
   it("tells the gate-fixer a gate after the review's fixes is at checkpoint 2, the repair-only one it knows", () => {
     const args = gateFixerPromptArgs(issue, "feature/3-add-a-thing", 3, "red");
@@ -174,7 +226,7 @@ describe("followUpPromptArgs", () => {
     assert.match(String(args.CODEQL_LOG), /##\[error\] CS8600/);
   });
 
-  it("still fills CODEQL_LOG when there's no log, since Sandcastle refuses an empty placeholder, without claiming the gate passed", () => {
+  it("still fills CODEQL_LOG when there's no log, rather than leave a blank, without claiming the gate passed", () => {
     const args = followUpPromptArgs(issue, "feature/3-add-a-thing", 42, [], "already contains main.");
 
     assert.match(String(args.CODEQL_LOG), /no log/i);
@@ -202,10 +254,10 @@ describe("critiquePromptArgs", () => {
   });
 });
 
-// The Seed review-prompt.md is never overwritten, so the rules for the
-// reviewer's PR description travel as a prompt argument the Template owns.
+// The rules for the reviewer's PR description travel as a prompt argument the
+// host fills in, so they match what the host refuses (lib/build.mts#reviewerPrBody).
 describe("reviewerPromptArgs", () => {
-  it("gives the reviewer PR_BODY_RULES, the Template's fragment, and not an empty one, since Sandcastle refuses an empty value", () => {
+  it("gives the reviewer PR_BODY_RULES, the Template's fragment, and not an empty one", () => {
     const args = reviewerPromptArgs(issue, "feature/3-add-a-thing");
 
     assert.equal(args.PR_BODY_RULES, PR_BODY_RULES);

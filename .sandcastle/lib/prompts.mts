@@ -25,7 +25,7 @@ export function issuePromptArgs(issue: SandcastleIssue, branch: string) {
 
 // The gate-fixer needs the issue, since at checkpoint 1 it may finish the
 // implementation, plus the red gate's output and which checkpoint it's at.
-// The Seed gate-fixer prompt knows two checkpoints. Checkpoint 3, the gate
+// The gate-fixer prompt knows two checkpoints. Checkpoint 3, the gate
 // after the host-side review's fixes, is a repair-only one like the second, so
 // the fixer is told it is at "2".
 export function gateFixerPromptArgs(issue: SandcastleIssue, branch: string, checkpoint: Checkpoint, gateOutput: string) {
@@ -33,11 +33,9 @@ export function gateFixerPromptArgs(issue: SandcastleIssue, branch: string, chec
 }
 
 // What the host refuses in the reviewer's PR description, filled in as
-// {{PR_BODY_RULES}} in review-prompt.md. It lives here, not in the Seed
-// prompt, because Apply never overwrites a Seed file: a repo gets new wording
-// on its next re-Apply only if the Template owns it (see
-// mpaulosky/dotfiles#320). Keep it in step with lib/build.mts#reviewerPrBody:
-// build.test.mts fails when a refusal there isn't named here.
+// {{PR_BODY_RULES}} in review-prompt.md. It lives here because the host fills
+// it in and it must match what lib/build.mts#reviewerPrBody refuses, which
+// build.test.mts pins: it fails when a refusal there isn't named here.
 export const PR_BODY_RULES = [
   "The host publishes `pr-body.md` word for word. When the file breaks any rule below it publishes a generic body instead, your description is lost,",
   "and you get no error. So:",
@@ -67,8 +65,8 @@ export function reviewerPromptArgs(issue: SandcastleIssue, branch: string): Prom
 // contains main, merged main cleanly, or merging main conflicted in which
 // files (and that it must finish the merge with `git commit --no-edit`).
 // `ciLog` is the failed-job log of each red check the gate doesn't cover,
-// such as CodeQL's, as CODEQL_LOG; Sandcastle refuses a placeholder
-// with no value, so a pass with none still sends a sentence saying so.
+// such as CodeQL's, as CODEQL_LOG; a placeholder with no value would leave
+// the role a blank, so a pass with none still sends a sentence saying so.
 export function followUpPromptArgs(
   issue: SandcastleIssue,
   branch: string,
@@ -96,24 +94,31 @@ export function architectPromptArgs(issue: SandcastleIssue, branch: string, desi
   return { ...issuePromptArgs(issue, branch), DESIGN_NOTE: designNote ?? "(no earlier design note)" };
 }
 
-// The backend developer needs to know whether the UI developer runs after it
-// for this issue: when it does, the Blazor components and pages are the UI
-// developer's, and the backend's run needn't leave every test green.
+// The developer needs to know whether the UI developer runs after it for this
+// issue: when it does, the UI files the shared rules name are the UI
+// developer's, and the developer's run needn't leave every test green.
 export function backendPromptArgs(issue: SandcastleIssue, branch: string, uiRuns: boolean): PromptArgs {
   return {
     ...issuePromptArgs(issue, branch),
     UI_DEVELOPER: uiRuns
-      ? "The UI developer runs after you for this issue. Leave Blazor components and pages (`.razor` files, their code-behind and their " +
-        "bUnit tests) to it, and make every other test pass. If the gate is still red only on those tests when you finish, say so in your " +
+      ? "The UI developer runs after you for this issue. Leave the UI files (the ones the shared rules name as the UI developer's) and " +
+        "their tests to it, and make every other test pass. If the gate is still red only on those tests when you finish, say so in your " +
         "last commit's body."
       : "No UI developer runs for this issue, so your run is the last developer run: every test must pass by its end.",
   };
 }
 
+// The planner's `ui` bullet, which plan-prompt.md carries as {{UI_ROLE}}: shown
+// only when the repo opted into the ui role (a `ui` entry in ROLE_AGENTS).
+export const UI_ROLE_BULLET =
+  "- `ui`: the issue adds or changes the user interface: the components, pages, markup, layout or styling that the shared rules name as the UI developer's. " +
+  "Leave it out when the issue changes none of those files.";
+
 // The host names branches and has already dropped issues with an open PR, so
-// the planner needs only the ready issues.
-export function plannerPromptArgs(ready: SandcastleIssue[]) {
-  return { ISSUES_JSON: JSON.stringify(ready) };
+// the planner needs only the ready issues, and the `ui` bullet when the repo
+// has a UI role.
+export function plannerPromptArgs(ready: SandcastleIssue[], uiRole: boolean) {
+  return { ISSUES_JSON: JSON.stringify(ready), UI_ROLE: uiRole ? UI_ROLE_BULLET : "" };
 }
 
 // The issues intake must judge against the Definition of Ready: every open

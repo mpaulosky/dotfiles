@@ -3,9 +3,10 @@
 // role's model, effort, iteration cap and timeout from ROLE_AGENTS and record
 // the run's token usage. The role is recorded before the run starts, so one
 // that times out or fails still appears in the end-of-run report. Every role's
-// prompt file also gets the shared role rules as {{SHARED_RULES}}. No role
-// starts once the run's limits (lib/limits.mts) say stop, and a run that hits
-// Claude's usage limit ends in an UncountedStopError.
+// prompt file also gets the shared role rules as {{SHARED_RULES}}, and the
+// repo's skills block as {{REPO_SKILLS}} to a prompt that has that placeholder.
+// No role starts once the run's limits (lib/limits.mts) say stop, and a run
+// that hits Claude's usage limit ends in an UncountedStopError.
 
 import { readFileSync } from "node:fs";
 import * as sandcastle from "@ai-hero/sandcastle";
@@ -175,15 +176,42 @@ export function roleOptions(role: AnyRole, timeout: (ms: number) => AbortSignal 
 }
 
 let sharedRules: string | undefined;
+let repoSkills: string | undefined;
 
-// Add .sandcastle/roles/shared-rules.md to a prompt file's arguments. An inline
-// prompt is left alone: Sandcastle rejects prompt arguments for one.
+// The placeholder as Sandcastle matches it (its PLACEHOLDER_PATTERN allows spaces inside the braces).
+const REPO_SKILLS_PLACEHOLDER = /\{\{\s*REPO_SKILLS\s*\}\}/;
+
+// Add .sandcastle/roles/shared-rules.md as {{SHARED_RULES}} to a prompt file's
+// arguments, and the trimmed text of .sandcastle/roles/skills.md (the repo's
+// skills block, empty when it mounts none) as {{REPO_SKILLS}}, but only to a
+// prompt that has that placeholder: Sandcastle logs a warning for every
+// argument a prompt doesn't reference, and only tester, backend and ui do. An
+// empty string is a fine value (Sandcastle refuses only null and undefined). A
+// prompt file that can't be read gets it too, so Sandcastle names the missing
+// file rather than a missing argument. An inline prompt is left alone:
+// Sandcastle rejects prompt arguments for one. A missing roles/ file throws,
+// as shared-rules.md's always has: both are Seed files.
 export function withSharedRules<T extends { prompt?: string; promptFile?: string; promptArgs?: sandcastle.PromptArgs }>(
   options: T,
 ): T & { promptArgs?: sandcastle.PromptArgs } {
   if (options.promptFile === undefined) return options;
   sharedRules ??= readFileSync(new URL("../roles/shared-rules.md", import.meta.url), "utf8");
-  return { ...options, promptArgs: { ...options.promptArgs, SHARED_RULES: sharedRules } };
+  repoSkills ??= readFileSync(new URL("../roles/skills.md", import.meta.url), "utf8").trim();
+  const text = promptText(options.promptFile);
+  const referencesSkills = text === undefined || REPO_SKILLS_PLACEHOLDER.test(text);
+  return {
+    ...options,
+    promptArgs: { ...options.promptArgs, SHARED_RULES: sharedRules, ...(referencesSkills ? { REPO_SKILLS: repoSkills } : {}) },
+  };
+}
+
+// A prompt file's text, read the way Sandcastle reads it (relative to the working directory), or undefined when it can't be read.
+function promptText(promptFile: string): string | undefined {
+  try {
+    return readFileSync(promptFile, "utf8");
+  } catch {
+    return undefined;
+  }
 }
 
 export function runRole<T>(

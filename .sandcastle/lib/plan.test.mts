@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { OPTIONAL_ROLES } from "./config.mts";
 import { uiEnabled } from "./agents.mts";
-import { readyPicks, resolveFiles, resolveRoles } from "./plan.mts";
+import { planRound, readyPicks, resolveFiles, resolveRoles } from "./plan.mts";
+import { plannerPromptArgs, UI_ROLE_BULLET } from "./prompts.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
 describe("readyPicks", () => {
@@ -41,6 +42,51 @@ describe("readyPicks", () => {
     const picks = readyPicks([{ id: "4", title: "A", files: ["lib/a.mts"] }], ready, () => {});
 
     assert.deepEqual(picks[0]?.files, ["lib/a.mts"]);
+  });
+});
+
+// mpaulosky/dotfiles#392: the planner offers the `ui` role only in a repo that opted into it, by the same test resolveRoles uses.
+describe("planRound's ui bullet", () => {
+  // planRound takes the function that starts the role and the one that makes its sandbox, so a test sees the prompt arguments it passes without Docker.
+  const planWith = async (ready: Parameters<typeof planRound>[0]) => {
+    const calls: { promptFile?: string; promptArgs: Record<string, string | number | boolean> }[] = [];
+    const run = (async (_role: string, options: (typeof calls)[number]) => {
+      calls.push(options);
+      return { output: { issues: [{ id: "4", title: "A" }] } };
+    }) as unknown as NonNullable<Parameters<typeof planRound>[1]>;
+    const picks = await planRound(ready, run, (() => ({})) as never);
+    return { picks, calls };
+  };
+
+  it("passes the planner the ui bullet when the repo opted into the ui role", async () => {
+    await withUiRole(true, async () => {
+      const { picks, calls } = await planWith([{ number: 4 } as never]);
+
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0]!.promptFile, "./.sandcastle/plan-prompt.md");
+      assert.equal(calls[0]!.promptArgs.UI_ROLE, UI_ROLE_BULLET);
+      assert.deepEqual(picks.map((pick) => pick.id), ["4"]);
+    });
+  });
+
+  it("passes the planner an empty ui slot when the repo didn't opt into the ui role", async () => {
+    await withUiRole(false, async () => {
+      const { calls } = await planWith([{ number: 4 } as never]);
+
+      assert.equal(calls[0]!.promptArgs.UI_ROLE, "");
+    });
+  });
+
+  it("gives the planner the bullet when uiEnabled() is true and nothing when it is false, the way resolveRoles decides", async () => {
+    await withUiRole(true, () => {
+      assert.equal(plannerPromptArgs([], uiEnabled()).UI_ROLE, UI_ROLE_BULLET);
+      assert.match(plannerPromptArgs([], uiEnabled()).UI_ROLE, /^- `ui`:/);
+      assert.ok(resolveRoles(undefined).includes("ui"));
+    });
+    await withUiRole(false, () => {
+      assert.equal(plannerPromptArgs([], uiEnabled()).UI_ROLE, "");
+      assert.ok(!resolveRoles(undefined).includes("ui"));
+    });
   });
 });
 

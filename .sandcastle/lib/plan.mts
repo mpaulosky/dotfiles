@@ -100,13 +100,18 @@ export function resolveFiles(files: unknown, repoRoot: string = SANDBOX_REPO_ROO
 // the issues that can be worked in parallel right now (i.e., no blocking
 // dependencies on other open issues). Only issues that passed the blocker gate
 // reach it, and the gate is enforced again in code afterwards, so a
-// hallucinated or stale id can't start work on a blocked issue.
-export async function planRound(ready: SandcastleIssue[]): Promise<PlannedIssue[]> {
-  const plan = await runRole("planner", {
+// hallucinated or stale id can't start work on a blocked issue. `run` starts
+// the role and `sandbox` makes its provider; for tests.
+export async function planRound(
+  ready: SandcastleIssue[],
+  run: typeof runRole = runRole,
+  sandbox: typeof agentSandbox = agentSandbox,
+): Promise<PlannedIssue[]> {
+  const plan = await run("planner", {
     hooks,
-    sandbox: agentSandbox(),
+    sandbox: sandbox(),
     promptFile: "./.sandcastle/plan-prompt.md",
-    promptArgs: plannerPromptArgs(ready),
+    promptArgs: plannerPromptArgs(ready, uiEnabled()),
     // Extract and validate the <plan> JSON into a typed object. Throws
     // StructuredOutputError if the tag is missing, the JSON is malformed, or
     // validation fails — which aborts the loop.

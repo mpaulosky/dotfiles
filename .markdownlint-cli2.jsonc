@@ -9,7 +9,7 @@
     "MD010": { "code_blocks": false },
     "MD025": { "front_matter_title": "" }
   },
-  // The Template's Seed prompts use the Sandcastle config (inline tags, one heading per
-  // section); test.sh lints them under it, as Apply writes them.
+  // The Template's Seed .sandcastle/ Markdown uses the Sandcastle config (inline tags, one heading per
+  // section); test.sh lints it under that config, as Apply writes it.
   "ignores": ["**/node_modules/**", "**/.pytest_cache/**", "Support For New Projects/.claude/skills/repo-ci-baseline/template/seed/.sandcastle/**"]
 }

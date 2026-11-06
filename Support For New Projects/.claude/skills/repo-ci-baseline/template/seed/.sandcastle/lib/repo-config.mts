@@ -18,8 +18,8 @@ const sonnet = "claude-sonnet-5-5";
 // whole round can be pointed back at an Opus model here). Structured-output
 // roles must stay at one iteration. A repo with Blazor components and pages
 // opts into the UI developer by uncommenting the `ui` entry at the end
-// (roles/ui.md is its prompt, and plan-prompt.md must offer the role to the
-// planner with a `ui` bullet in its ROLES list).
+// (roles/ui.md and plan-prompt.md are Owned and already carry the role; the
+// repo names its UI files in a "UI developer" section of roles/shared-rules.md).
 export const ROLE_AGENTS = {
   intake: { model: sonnet, effort: "medium", maxIterations: 1, timeoutMinutes: 15 },
   planner: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
@@ -59,8 +59,8 @@ export const copyToWorktree = ["node_modules"];
 // The host skills the role prompts tell the agent to use, from the host
 // user's ~/.claude/skills (lib/skills.mts mounts each one read-only). None by
 // default: name a skill here only when it isn't in the worktree and you also
-// list it in a `# SKILLS` section of the tester and backend prompts (and of the
-// ui prompt, once the repo opts into that role); lib/skills.test.mts checks it.
+// list it in `roles/skills.md`, which the host passes to the tester, backend
+// and ui prompts as {{REPO_SKILLS}}; lib/skills.test.mts checks it.
 export const SANDBOX_SKILLS: readonly string[] = [];
 
 // The CI checks scripts/gate.sh reproduces, which a follow-up pass re-runs

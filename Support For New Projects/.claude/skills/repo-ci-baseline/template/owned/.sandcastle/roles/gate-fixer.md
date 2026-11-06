@@ -42,14 +42,13 @@ This is checkpoint {{CHECKPOINT}}.
 
 At either checkpoint, never weaken, skip or delete a test to make the gate pass. Don't loosen an assertion, skip or todo a test in any form
 (`node:test`'s `.skip`, `.todo`, `{ skip }`, `{ todo }`, `t.skip()` or `t.todo()`; xUnit's `Skip =` or `Assert.Skip()`;
-pytest's `skip`, `skipif` or `xfail` marks, or `pytest.skip()`; an early `exit 0` or
-`return` in a `.test.sh`),
+pytest's `skip`, `skipif` or `xfail` marks, or `pytest.skip()`; an early `exit 0` or `return` in a `.test.sh`),
 comment a test out, raise a lint limit, or disable a rule.
 When a test is wrong rather than the code, say so in your commit body instead of changing what it checks.
 
 # EXECUTION
 
-1. Read the gate output above and find the failing step. The gate stops at the first one that fails, so a later step may fail too once it's fixed.
+1. Read the gate output above and find the failing step or steps. The gate may stop at the first failure or report several, so fix one at a time and re-run.
 2. Fix the cause, running that step's command directly to check the fix.
 3. Commit the fix.
 4. Run `scripts/gate.sh`, and repeat until it passes or you can't make progress.

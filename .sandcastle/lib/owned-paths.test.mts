@@ -27,6 +27,10 @@ const filesUnder = (folder: string): string[] =>
     // Test runs leave these behind in the working tree; git ignores them.
     .filter((entry) => !/(^|\/)(__pycache__|\.pytest_cache|node_modules)(\/|$)/.test(entry));
 
+// The widest gap between naming main.mts or status.mts and saying they stay exempt that still counts as one claim: a comment wraps lines, and a file name holds a dot.
+const MAIN_STATUS_EXEMPT_SPAN = 200;
+const claimsMainOrStatusExempt = (text: string) => new RegExp(`(main|status)\\.mts[\\s\\S]{0,${MAIN_STATUS_EXEMPT_SPAN}}?(stay|remain)s? exempt`).test(text);
+
 describe("OWNED_PATHS against the Template's template/owned/", () => {
   it("covers every file the Template's Owned folder holds", () => {
     const uncovered = filesUnder(owned).filter((file) => !underOwnedPattern(file));
@@ -182,14 +186,26 @@ describe("the files a re-Apply may write without a review", () => {
     }
   });
 
+  it("catches the claim that main.mts or status.mts stay exempt, across the dot in a file name and a line break", () => {
+    const withGap = (gap: number) => `main.mts${"x".repeat(gap)}stay exempt`;
+
+    assert.equal(claimsMainOrStatusExempt("the entrypoint, main.mts and status.mts,\n// stay exempt for now"), true);
+    assert.equal(claimsMainOrStatusExempt("status.mts remains exempt"), true);
+    assert.equal(claimsMainOrStatusExempt(withGap(MAIN_STATUS_EXEMPT_SPAN - 1)), true, "a claim one short of the span");
+    assert.equal(claimsMainOrStatusExempt(withGap(MAIN_STATUS_EXEMPT_SPAN)), true, "a claim at the span");
+    assert.equal(claimsMainOrStatusExempt(withGap(MAIN_STATUS_EXEMPT_SPAN + 1)), false, "a claim one past the span");
+    assert.equal(claimsMainOrStatusExempt("main.mts and status.mts go in REVIEWED_ON_REAPPLY"), false);
+  });
+
   it("says in lib/review-ledger.mts that main.mts and status.mts are reviewed, and that a person starts the hardening reviewers (mpaulosky/dotfiles#462)", () => {
     const source = readFileSync(join(root, ".sandcastle/lib/review-ledger.mts"), "utf8");
     const comment = source.slice(0, source.indexOf("export const OWNED_PATHS"));
 
-    assert.doesNotMatch(comment, /main\.mts[^.]*(stay|remain)s? exempt/);
+    assert.equal(claimsMainOrStatusExempt(comment), false, "the comment says main.mts or status.mts stay exempt");
     assert.match(comment, /main\.mts/, "the comment doesn't name main.mts among the reviewed files");
     assert.match(comment, /status\.mts/, "the comment doesn't name status.mts among the reviewed files");
-    assert.match(comment, /hardening-review[\s\S]*?(a person|person's)[\s\S]*?(start|launch)/i, "the comment doesn't give the person-starts-the-reviewers reason");
+    // The sentence itself, across its line break: "a person" alone appears elsewhere in the comment.
+    assert.match(comment, /a person starts the reviewers\s+\/\/ that read it and reads their output/, "the comment doesn't give the person-starts-the-reviewers reason");
     assert.doesNotMatch(comment, /text no Sandcastle role reads/);
   });
 

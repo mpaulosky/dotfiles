@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -13,6 +13,7 @@ import {
   REVIEWER_LOGS_NAME,
   REPORT_ERROR_LINES,
   REPORT_HOST_LINES,
+  REPORT_INPUT_LIMIT,
   REPORT_TOOL_LINES,
   REPORT_LINE_LIMIT,
   REPORT_TOKEN_RUN,
@@ -606,6 +607,93 @@ describe("reviewer log index", () => {
       assert.equal(readFileSync(join(dir, "report", "index.txt"), "utf8"), "reviewer-1.log: issue #9\n");
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+});
+
+// A reviewer log is written by the sandbox, so its size is the sandbox's choice: the host reads at most the end of it, which is all the view keeps.
+describe("the input limit", () => {
+  const early = "Error: early failure\n";
+  const late = "Error: late failure\n";
+  // A log of exactly `length` characters: the early error line, one long line of filler, the late error line.
+  const logOf = (length: number) => `${early}${"a".repeat(length - early.length - late.length - 1)}\n${late}`;
+
+  it("keeps the whole log up to REPORT_INPUT_LIMIT characters and only its end beyond it (n-1, n, n+1)", () => {
+    assert.equal(REPORT_INPUT_LIMIT, 4 * 1024 * 1024);
+    for (const [length, keepsEarly] of [[REPORT_INPUT_LIMIT - 1, true], [REPORT_INPUT_LIMIT, true], [REPORT_INPUT_LIMIT + 1, false]] as const) {
+      const view = allowlistedView(logOf(length));
+      assert.equal(view.includes("Error: early failure"), keepsEarly, `length ${length}`);
+      assert.ok(view.includes("Error: late failure"), `length ${length}`);
+    }
+  });
+
+  it("reads at most the last REPORT_INPUT_LIMIT bytes of a real log, from a whole line, and all of a log that fits (n-1, n, n+1)", () => {
+    const root = mkdtempSync(join(tmpdir(), "role-logs-limit-"));
+    try {
+      const file = join(root, "a-reviewer.log");
+      for (const [bytes, keepsEarly] of [[REPORT_INPUT_LIMIT - 1, true], [REPORT_INPUT_LIMIT, true], [REPORT_INPUT_LIMIT + 1, false]] as const) {
+        writeFileSync(file, logOf(bytes));
+        const text = liveRoleLogFs.read(file);
+        assert.equal(text.includes("Error: early failure"), keepsEarly, `${bytes} bytes`);
+        assert.ok(text.includes("Error: late failure"), `${bytes} bytes`);
+        assert.ok(Buffer.byteLength(text) <= REPORT_INPUT_LIMIT, `${bytes} bytes`);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
+  it("keeps a first line that the cut leaves whole, and leaves nothing for a tail with no line break", () => {
+    // The cut lands just after a line break: the early line is whole, so it stays.
+    const aligned = `x\n${early}${"a".repeat(REPORT_INPUT_LIMIT - early.length - late.length - 1)}\n${late}`;
+    assert.equal(aligned.length, REPORT_INPUT_LIMIT + 2);
+    assert.ok(allowlistedView(aligned).includes("Error: early failure"));
+    // One character further in, the early line starts exactly where the last REPORT_INPUT_LIMIT + 1 characters begin: nothing shows it began a line,
+    // so it goes, which keeps the result within the limit.
+    const exact = `x\n${early}${"a".repeat(REPORT_INPUT_LIMIT - early.length - late.length)}\n${late}`;
+    assert.equal(exact.length, REPORT_INPUT_LIMIT + 3);
+    assert.ok(!allowlistedView(exact).includes("Error: early failure"));
+    const root = mkdtempSync(join(tmpdir(), "role-logs-limit-"));
+    try {
+      const file = join(root, "a-reviewer.log");
+      writeFileSync(file, aligned);
+      assert.ok(liveRoleLogFs.read(file).includes("Error: early failure"));
+      writeFileSync(file, exact);
+      assert.ok(!liveRoleLogFs.read(file).includes("Error: early failure"));
+      // No line break in the last REPORT_INPUT_LIMIT + 1 bytes: nothing is read, as nothing in it starts a line.
+      writeFileSync(file, `${early}${"a".repeat(REPORT_INPUT_LIMIT + 5)}`);
+      assert.equal(liveRoleLogFs.read(file), "");
+      assert.equal(allowlistedView(`${early}${"a".repeat(REPORT_INPUT_LIMIT + 5)}`), "\n");
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
+  it("never starts the tail in the middle of a multi-byte character", () => {
+    const root = mkdtempSync(join(tmpdir(), "role-logs-limit-"));
+    try {
+      const file = join(root, "a-reviewer.log");
+      // The cut lands on the second byte of the first é (the file is one byte over the limit).
+      const head = `${"é".repeat(5)}\n`;
+      const filler = "a".repeat(REPORT_INPUT_LIMIT + 1 - Buffer.byteLength(head) - Buffer.byteLength(late) - 1);
+      writeFileSync(file, `${head}${filler}\n${late}`);
+      assert.equal(statSync(file).size, REPORT_INPUT_LIMIT + 1);
+      const text = liveRoleLogFs.read(file);
+      assert.ok(!text.includes("\uFFFD"), "a half character became U+FFFD");
+      assert.ok(text.includes("Error: late failure"));
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
+  it("still refuses a log that is not a regular file", () => {
+    const root = mkdtempSync(join(tmpdir(), "role-logs-limit-"));
+    try {
+      writeFileSync(join(root, "target"), "x");
+      symlinkSync(join(root, "target"), join(root, "link-reviewer.log"));
+      assert.throws(() => liveRoleLogFs.read(join(root, "link-reviewer.log")));
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });

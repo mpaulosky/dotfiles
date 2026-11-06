@@ -14,7 +14,7 @@
 // The output folder is emptied before it is written, in case an earlier run left files in it.
 // A reviewer run the host gave up on may still be writing its log, so a copy is a snapshot.
 
-import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { containsSecret, sandboxSecrets } from "./sandbox-env.mts";
 
@@ -42,6 +42,18 @@ export const REPORT_TOOL_LINES = 30;
 
 // A run of this many token characters in an error line (base64, hex, a key) leaves the line out.
 export const REPORT_TOKEN_RUN = 24;
+
+// How much of a reviewer log the host reads: its last REPORT_INPUT_LIMIT bytes (characters, in allowlistedView), starting at a whole line. The sandbox writes
+// the log, so its size is the sandbox's choice, and the view keeps only the last lines of each kind, so reading more only costs the host memory in
+// proportion to the log (the string, then a line array and a same-length keep array) while generating its report.
+export const REPORT_INPUT_LIMIT = 4 * 1024 * 1024;
+
+// `text` from its first whole line on: a text cut at its start begins in the middle of a line (or of a multi-byte character), so everything up to the
+// first line break goes, and a text with no line break is left empty.
+function fromWholeLine(text: string): string {
+  const newline = text.indexOf("\n");
+  return newline === -1 ? "" : text.slice(newline + 1);
+}
 
 // What copyReviewerLogs needs from the outside world; tests pass a stub.
 export type RoleLogFs = {
@@ -103,7 +115,9 @@ function cut(text: string, limit: number): string {
 // are kept as free text cut to REPORT_LINE_LIMIT, unless one holds a run of REPORT_TOKEN_RUN token characters or
 // `held` says it looks like a secret. Model prose, tool arguments and tool output are what it leaves out.
 export function allowlistedView(text: string, held: (line: string) => boolean = () => false): string {
-  const lines = text.split(/\r?\n/);
+  // One character more than the limit, so a cut that lands on a line break leaves that line whole: the line break is the part dropped.
+  const bounded = text.length > REPORT_INPUT_LIMIT ? fromWholeLine(text.slice(-(REPORT_INPUT_LIMIT + 1))) : text;
+  const lines = bounded.split(/\r?\n/);
   const keep = new Array<string | undefined>(lines.length).fill(undefined);
   const errors: number[] = [];
   const hosts: number[] = [];
@@ -257,9 +271,28 @@ export const liveRoleLogFs: RoleLogFs = {
       throw error;
     }
   },
+  // At most the last REPORT_INPUT_LIMIT bytes, from a whole line. O_NOFOLLOW refuses a symlink put in place after the check above.
   read: (path) => {
     if (!lstatSync(path).isFile()) throw new Error("not a regular file");
-    return readFileSync(path, "utf8");
+    const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile()) throw new Error("not a regular file");
+      // One byte more than the limit when the log is over it, as in allowlistedView.
+      const over = stat.size > REPORT_INPUT_LIMIT;
+      const start = over ? stat.size - REPORT_INPUT_LIMIT - 1 : 0;
+      const buffer = Buffer.alloc(stat.size - start);
+      let filled = 0;
+      while (filled < buffer.length) {
+        const count = readSync(fd, buffer, filled, buffer.length - filled, start + filled);
+        if (count === 0) break;
+        filled += count;
+      }
+      const text = buffer.subarray(0, filled).toString("utf8");
+      return over ? fromWholeLine(text) : text;
+    } finally {
+      closeSync(fd);
+    }
   },
   mkdir: (path) => mkdirSync(path, { recursive: true }),
   write: (path, text) => writeFileSync(path, text),

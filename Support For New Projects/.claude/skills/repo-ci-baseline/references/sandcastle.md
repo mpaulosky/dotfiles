@@ -259,7 +259,8 @@ In any other repo, Apply leaves out every file under `.sandcastle/`, plus `packa
 
 - **dotfiles' own tests:** `lib/repo-config.test.mts` (dotfiles' per-repo values and root copies), `lib/template.test.mts` (type-checks the
   Template's `.sandcastle/` as Apply writes it and runs its Owned tests there), `lib/dockerfile.test.mts`, `lib/role-prompts.test.mts`,
-  `lib/owned-paths.test.mts` (keeps `OWNED_PATHS` in `lib/review-ledger.mts` equal to `template/owned/`) and `main.test.mts`, which read dotfiles' own files.
+  `lib/owned-paths.test.mts` (keeps `OWNED_PATHS` in `lib/review-ledger.mts` equal to `template/owned/`, and holds each file to a re-Apply classification)
+  and `main.test.mts`, which read dotfiles' own files.
 - **Other `.github/workflows/sandcastle*.yml` files.** Only `sandcastle.yml` is the Template's (below); a repo's own extra Sandcastle workflow stays its own.
 
 ## The workflow

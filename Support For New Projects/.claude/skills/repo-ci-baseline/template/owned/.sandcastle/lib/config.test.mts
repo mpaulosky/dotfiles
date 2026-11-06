@@ -516,9 +516,10 @@ describe("the PR watcher", () => {
 });
 
 // The text of a Markdown file as a reader sees it, for the one check above: a comment that opens a line (as the Seed's does) is dropped up to the
-// line holding its "-->", an unclosed one running to the end of the file; a fenced block is replaced by "X", an unclosed fence too, since it runs to the end; and everything else, a
-// "<!--" inside a code span included, is left as written, so it neither opens a comment nor hides the heading after it. Read line by line, so a "#"
-// line inside a comment or a fence is never taken for a heading.
+// line holding its "-->", an unclosed one running to the end of the file; a fenced block that holds text is replaced by "X", an unclosed one too,
+// since it runs to the end, and an empty one by nothing; and every other complete comment on a line is dropped, wherever it sits, a code span's
+// included. What is left, an unclosed "<!--" after other text or inside a code span among it, is text as written, so it never hides the heading
+// after it. Read line by line, so a "#" line inside a comment or a fence is never taken for a heading.
 function visibleMarkdown(markdown: string): string {
   const out: string[] = [];
   let fence: RegExp | undefined;
@@ -570,6 +571,9 @@ function visibleMarkdown(markdown: string): string {
     // A line that shows only comments shows nothing.
     out.push(rest.replace(/<!--.*?-->/g, ""));
   }
+
+  // A fence still open at the end runs to the end of the file, and what it held is shown.
+  if (fence && fenceHasText) out.push("X");
 
   return out.join("\n");
 }

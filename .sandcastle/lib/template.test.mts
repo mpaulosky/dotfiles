@@ -179,7 +179,7 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
       // Each way a comment or a fence can be written that the reader must get right, by the CommonMark rules for an HTML block and a fence.
       // A row that passes names text that only survives when the reader gets its case right: a comment ahead of the heading that opened wrongly would
       // hide the heading. The row that fails names the message it must fail with.
-      const reads: [string, string, boolean][] = [
+      const reads: [string, string, boolean, RegExp?][] = [
         ["a comment closed and a second one opened on the same line, ahead of the heading", withText("<!-- a --> <!-- b"), true],
         ["a multi-line comment's closing line that opens another, ahead of the heading", withText("<!--\nx --> <!-- y"), true],
         ["a comment that is only \"<!-->\", ahead of the heading", withText("<!-->"), true],
@@ -189,19 +189,24 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
         ["a backtick fence a tilde line doesn't close", withText("````md\n<!--\n~~~~\n````"), true],
         ["a line indented four spaces, which is code", section("    <!-- not a comment"), true],
         ["a section of only an indented comment", section("  <!-- the UI files go here -->"), false],
+        ["an unclosed fence holding text as the section's last content", section("```\nsrc/Web/").replace(/\n\n(?=## Build and tests)/, ""), true],
+        ["a multi-line comment indented three spaces, with no other text", section("  <!-- the UI files\ngo here -->"), false],
+        ["an indented fence holding a comment opener, ahead of the heading", withText("  ```\n<!--\n  ```"), true],
+        ["a heading indented one space", section("The UI files.").replace(/^## UI developer/m, " ## UI developer"), true],
+        ["a heading indented four spaces, which is code", section("The UI files.").replace(/^## UI developer/m, "    ## UI developer"), false, /has no "## UI developer" section/],
         ["a comment-only section followed by an indented sibling heading", section("<!-- x -->").replace(/^## Build and tests/m, "  ## Build and tests"), false],
         ["a section of only an empty fenced block", section("```\n\n```"), false],
         ["a section of only a whitespace fenced block", section("~~~\n   \n~~~"), false],
         ["a section of only two comments on one line", section("<!-- UI files --> <!-- TODO -->"), false],
         ["a section of a comment closed with a second comment after it, then text", section("<!-- a --> <!-- b -->\nThe UI files."), true],
       ];
-      for (const [name, text, passes] of reads) {
+      for (const [name, text, passes, message = /has only a comment/] of reads) {
         writeFileSync(rules, text);
         const result = run();
         assert.equal(result.status === 0, passes, `${name}: ${result.stdout}${result.stderr}`);
         if (!passes) {
           assert.match(result.stdout, failedCheck, name);
-          assert.match(result.stdout, /has only a comment/, name);
+          assert.match(result.stdout, message, name);
         }
       }
 

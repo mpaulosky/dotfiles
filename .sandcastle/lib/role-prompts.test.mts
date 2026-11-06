@@ -559,6 +559,15 @@ describe("comments about the prompts", () => {
   }
 });
 
+describe("the agents.mts header", () => {
+  it("says {{REPO_SKILLS}} goes only to a prompt that has the placeholder, as withSharedRules does", () => {
+    const header = read("lib/agents.mts").split("\n").filter((line) => line.startsWith("//")).join(" ").replace(/\/\/\s*/g, "").replace(/\s+/g, " ");
+
+    assert.doesNotMatch(header, /Every role's prompt file also gets the shared role rules as \{\{SHARED_RULES\}\} and the repo's skills block as \{\{REPO_SKILLS\}\}/);
+    assert.match(header, /\{\{REPO_SKILLS\}\} to a prompt that has that placeholder/);
+  });
+});
+
 // mpaulosky/dotfiles#392: the prose that describes the prompts says they are Owned. Each of these once described the Seed prompts.
 describe("the docs about the Owned prompts", () => {
   const skill = new URL("../../Support For New Projects/.claude/skills/repo-ci-baseline/", import.meta.url);

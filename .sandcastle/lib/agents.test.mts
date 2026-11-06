@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import type * as sandcastle from "@ai-hero/sandcastle";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
@@ -359,10 +360,15 @@ describe("withSharedRules", () => {
     });
 
     it("is passed to the prompts that carry the placeholder in the Template, and left off the rest", () => {
-      const sandcastle = new URL("../", import.meta.url).pathname;
-      const has = (file: string) => withSharedRules({ promptFile: `${sandcastle}${file}` }).promptArgs?.REPO_SKILLS !== undefined;
+      // fileURLToPath, not .pathname: the Template sits under a folder with spaces, which .pathname leaves as %20.
+      const sandcastle = fileURLToPath(new URL("../", import.meta.url));
+      const has = (file: string) => {
+        const promptFile = join(sandcastle, file);
+        assert.equal(existsSync(promptFile), true, `${file} can't be read: an unreadable prompt is passed REPO_SKILLS, which would hide a wrong path`);
+        return withSharedRules({ promptFile }).promptArgs?.REPO_SKILLS !== undefined;
+      };
 
-      for (const file of ["roles/tester.md", "roles/backend.md"]) assert.equal(has(file), true, file);
+      for (const file of ["roles/tester.md", "roles/backend.md", "roles/ui.md"]) assert.equal(has(file), true, file);
       for (const file of ["roles/architect.md", "roles/scribe.md", "roles/gate-fixer.md", "roles/follow-up.md", "plan-prompt.md", "review-prompt.md", "intake-prompt.md", "critique-prompt.md"]) {
         assert.equal(has(file), false, file);
       }

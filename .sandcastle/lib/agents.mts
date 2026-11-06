@@ -3,10 +3,10 @@
 // role's model, effort, iteration cap and timeout from ROLE_AGENTS and record
 // the run's token usage. The role is recorded before the run starts, so one
 // that times out or fails still appears in the end-of-run report. Every role's
-// prompt file also gets the shared role rules as {{SHARED_RULES}} and the
-// repo's skills block as {{REPO_SKILLS}}. No role starts once the run's limits
-// (lib/limits.mts) say stop, and a run that hits Claude's usage limit ends in
-// an UncountedStopError.
+// prompt file also gets the shared role rules as {{SHARED_RULES}}, and the
+// repo's skills block as {{REPO_SKILLS}} to a prompt that has that placeholder.
+// No role starts once the run's limits (lib/limits.mts) say stop, and a run
+// that hits Claude's usage limit ends in an UncountedStopError.
 
 import { readFileSync } from "node:fs";
 import * as sandcastle from "@ai-hero/sandcastle";

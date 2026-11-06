@@ -81,7 +81,10 @@ export const MAX_AGENTS_WORD_BYTES = 60_000;
 const BUILTIN_SUBAGENT_TYPES = ["general-purpose", "Explore", "Plan", "statusline-setup", "claude-code-guide", "output-style-setup"] as const;
 
 // What the lead of a review's subagents is denied: the ledger rules, and every known built-in subagent type (the allowlist in leadTools is the first layer).
-export const LEAD_DENIED_TOOLS: readonly string[] = [...LEDGER_DENIED_TOOLS, ...BUILTIN_SUBAGENT_TYPES.map((type) => `Agent(${type})`)];
+// The lead's own definition holds none of the shell, write and network tools, but `--tools` no longer narrows the session, so they are denied too: should `--agent` not apply the
+// definition's tools, the lead still can't run a command, write a file or reach the network.
+const LEAD_NEVER_TOOLS = ["Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"] as const;
+export const LEAD_DENIED_TOOLS: readonly string[] = [...LEDGER_DENIED_TOOLS, ...BUILTIN_SUBAGENT_TYPES.map((type) => `Agent(${type})`), ...LEAD_NEVER_TOOLS];
 
 // The subagent names `--agents` takes: lowercase ASCII, so a name is never a shell or JSON surprise (nor a wildcard, comma or parenthesis in an allowlist).
 const AGENT_NAME = /^[a-z][a-z0-9-]*$/;
@@ -89,12 +92,22 @@ const AGENT_NAME = /^[a-z][a-z0-9-]*$/;
 // The name the lead is defined under in `--agents`, and started as with `--agent`.
 export const LEAD_AGENT_NAME = "pre-push-review-lead";
 
+// The lead's `description` and `prompt` in `--agents`: under `--agent` the prompt is the session's system prompt, and the round's own prompt arrives on stdin.
+export const LEAD_DESCRIPTION = "Starts the round's reviewers and relays their answers";
+export const LEAD_PROMPT = "Follow the task you are given.";
+
+// Throws for a subagent name that is the lead's own, which `--agents` would let the lead's definition silently replace, and which the lead's allowlist must not name.
+function checkNotLeadName(name: string): void {
+  if (name === LEAD_AGENT_NAME) throw new Error(`the agent name ${LEAD_AGENT_NAME} is reserved for the lead`);
+}
+
 // The tools the lead of a review's subagents gets: `Agent(<names>)`, which lets it start only those subagents and no other, and the reviewers' own tools.
 // Claude Code honours `Agent(name,...)` in a `--agents` definition's `tools`, not in `--tools`; restrictedClaudeCode puts these tools there, refuses a lead whose Agent tool
 // isn't exactly this, and the deny list in LEAD_DENIED_TOOLS stays beside it.
 export function leadTools(agentNames: readonly string[]): string[] {
   if (agentNames.length === 0) throw new Error("the lead's Agent tool needs at least one agent to allow");
   for (const name of agentNames) {
+    checkNotLeadName(name);
     if (!AGENT_NAME.test(name)) throw new Error(`an agent name for the lead's Agent tool must be lowercase ASCII letters, digits and hyphens, starting with a letter, not ${JSON.stringify(name.slice(0, 40))}`);
   }
   return [`Agent(${agentNames.join(",")})`, ...REVIEWER_TOOLS];
@@ -108,6 +121,10 @@ function checkLeadAgentTool(tools: readonly string[] | undefined, agentNames: re
   if (agentTools.length !== 1 || agentTools[0] !== expected) {
     throw new Error(`a role with subagents defined must have the tool ${expected} and no other Agent tool, so it starts only those agents; got ${JSON.stringify(agentTools)}`);
   }
+  // The lead's definition is the only ceiling on its tools (no `--tools` narrows the session), so nothing but the reviewers' own tools may sit beside the Agent tool.
+  const others = (tools ?? []).filter((tool) => tool !== "Agent" && !tool.startsWith("Agent("));
+  const extra = others.filter((tool) => !(REVIEWER_TOOLS as readonly string[]).includes(tool));
+  if (extra.length > 0) throw new Error(`a role with subagents defined may hold only Agent(...) and ${REVIEWER_TOOLS.join(", ")} as tools, not the tool(s) ${JSON.stringify(extra)}`);
 }
 
 const PRINT_COMMAND_START = "claude --print ";
@@ -123,6 +140,7 @@ function agentsJson(agents: Readonly<Record<string, SubagentDefinition>>, lead?:
   const names = Object.keys(agents);
   if (names.length === 0) throw new Error("the agents to define for --agents are empty: give none or at least one");
   for (const name of names) {
+    checkNotLeadName(name);
     if (!AGENT_NAME.test(name)) throw new Error(`an agent name for --agents must be lowercase ASCII letters, digits and hyphens, starting with a letter, not ${JSON.stringify(name.slice(0, 40))}`);
   }
   // The ceiling on what a subagent can do is its own tools, so the builder holds it and not only the one caller that builds them today.
@@ -134,7 +152,7 @@ function agentsJson(agents: Readonly<Record<string, SubagentDefinition>>, lead?:
   const json = JSON.stringify(
     lead === undefined
       ? agents
-      : { ...agents, [LEAD_AGENT_NAME]: { description: "Starts the round's reviewers and relays their answers", prompt: "Follow the task you are given.", tools: lead.tools, model: lead.model } },
+      : { ...agents, [LEAD_AGENT_NAME]: { description: LEAD_DESCRIPTION, prompt: LEAD_PROMPT, tools: lead.tools, model: lead.model } },
   );
   const bytes = Buffer.byteLength(shellWord(json));
   if (bytes > MAX_AGENTS_WORD_BYTES) throw new Error(`the --agents word is ${bytes} bytes once quoted for the shell, over the limit of ${MAX_AGENTS_WORD_BYTES} bytes`);

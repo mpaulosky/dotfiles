@@ -9,6 +9,8 @@ import {
   isRoleTimeout,
   LEAD_AGENT_NAME,
   LEAD_DENIED_TOOLS,
+  LEAD_DESCRIPTION,
+  LEAD_PROMPT,
   leadTools,
   LEDGER_DENIED_TOOLS,
   MAX_AGENTS_WORD_BYTES,
@@ -437,6 +439,12 @@ describe("the pre-push review lead role", () => {
   });
 });
 
+describe("LEAD_DENIED_TOOLS beside the lead's definition", () => {
+  it("also denies every tool the lead must not hold, so a lead that starts without its definition's tools still has no shell, network or write tool", () => {
+    for (const tool of ["Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"]) assert.ok(LEAD_DENIED_TOOLS.includes(tool), `${tool} isn't denied`);
+  });
+});
+
 describe("LEAD_DENIED_TOOLS", () => {
   it("holds the ledger deny list and denies every built-in subagent type, so the lead starts only the lens-<id> agents defined for it", () => {
     for (const rule of LEDGER_DENIED_TOOLS) assert.ok(LEAD_DENIED_TOOLS.includes(rule), rule);
@@ -527,6 +535,33 @@ describe("restrictedClaudeCode's --agents", () => {
     assert.throws(() => restrictedClaudeCode("sonnet", "high", { ...lead, tools: undefined, agents }), /Agent/, "no --tools at all");
   });
 
+  it("reserves the lead's own name: a subagent called pre-push-review-lead is refused, not silently replaced by the lead, and the allowlist can't name the lead", () => {
+    const agents = { "lens-1": definition(), [LEAD_AGENT_NAME]: definition() };
+
+    assert.throws(() => restrictedClaudeCode("sonnet", "high", { ...lead, tools: ["Agent(lens-1,pre-push-review-lead)", ...REVIEWER_TOOLS], agents }), /reserved/);
+    assert.throws(() => leadTools([LEAD_AGENT_NAME]), /reserved/);
+    assert.throws(() => leadTools(["lens-1", LEAD_AGENT_NAME]), /reserved/);
+  });
+
+  it("refuses a lead that holds a tool beyond the Agent allowlist and the reviewers' own, since its definition is now the only tool ceiling", () => {
+    const agents = { "lens-1": definition() };
+    const withTools = (tools: readonly string[]) => () => restrictedClaudeCode("sonnet", "high", { ...lead, tools, agents });
+
+    assert.doesNotThrow(withTools(leadTools(["lens-1"])));
+    for (const extra of ["Bash", "Edit", "Write", "WebFetch", "WebSearch", "NotebookEdit", "Bash(git status)", "mcp__x__y"]) {
+      assert.throws(withTools([...leadTools(["lens-1"]), extra]), /tool/i, extra);
+    }
+  });
+
+  it("writes the lead's description and prompt from LEAD_DESCRIPTION and LEAD_PROMPT, which are not empty", () => {
+    const command = commandOf(leadFor({ "lens-1": definition() }));
+    const defined = (agentsJson(command) as Record<string, { description: string; prompt: string }>)[LEAD_AGENT_NAME]!;
+
+    assert.ok(LEAD_DESCRIPTION.trim().length > 0 && LEAD_PROMPT.trim().length > 0);
+    assert.equal(defined.description, LEAD_DESCRIPTION);
+    assert.equal(defined.prompt, LEAD_PROMPT);
+  });
+
   it("keeps the prompt on stdin and the flags before -p -", () => {
     const result = restrictedClaudeCode("sonnet", "high", leadFor({ "lens-1": definition() })).buildPrintCommand({
       prompt: "the prompt",
@@ -541,6 +576,8 @@ describe("restrictedClaudeCode's --agents", () => {
   it("adds no --agents when none are given", () => {
     assert.doesNotMatch(commandOf(lead), /--agents/);
     assert.doesNotMatch(commandOf({ tools: REVIEWER_TOOLS }), /--agents/);
+    // `--agent` would start a reviewer as an agent nobody defined for it.
+    for (const restrictions of [lead, { tools: REVIEWER_TOOLS }]) assert.ok(!wordsOf(commandOf(restrictions)).includes("--agent"));
   });
 
   it("applies --agents even when the Agent allowlist is its only companion", () => {
@@ -587,7 +624,7 @@ describe("restrictedClaudeCode's --agents", () => {
   // The size of the word the shell is handed: the JSON in single quotes, each single quote inside it written as four bytes ('\'').
   // The lead's own definition goes in the word too, so the test builds the same JSON restrictedClaudeCode does (the real function throws over the cap).
   const wordBytes = (agents: Record<string, SubagentDefinition>) => {
-    const lead = { description: "Starts the round's reviewers and relays their answers", prompt: "Follow the task you are given.", tools: leadTools(Object.keys(agents)), model: "sonnet" };
+    const lead = { description: LEAD_DESCRIPTION, prompt: LEAD_PROMPT, tools: leadTools(Object.keys(agents)), model: "sonnet" };
     return Buffer.byteLength(`'${JSON.stringify({ ...agents, [LEAD_AGENT_NAME]: lead }).replaceAll("'", `'\\''`)}'`);
   };
   const build = (agents: Record<string, SubagentDefinition>) => () => restrictedClaudeCode("sonnet", "high", leadFor(agents));

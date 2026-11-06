@@ -4635,9 +4635,13 @@ describe("liveReviewHost", () => {
       const command = commandOf(runs[0]!);
       const words = wordsOf(command);
       // The lead's Agent tool names exactly the lens-<id> agents defined for the round, so no other subagent (a user-level or plugin one, a type a later Claude Code adds) starts.
-      assert.equal(words[words.indexOf("--tools") + 1], leadTools(["lens-1", "lens-2"]).join(","));
-      assert.equal(words[words.indexOf("--tools") + 1], "Agent(lens-1,lens-2),Read,Grep,Glob");
-      assert.doesNotMatch(words[words.indexOf("--tools") + 1]!, /Bash|Edit|Write/);
+      // Claude Code 2.1.317 honours `Agent(name,...)` only in an --agents definition's tools: in --tools it leaves the session no Agent tool at all. So the lead is a definition, started with --agent.
+      assert.ok(!words.includes("--tools"), "--tools would leave the lead no Agent tool");
+      assert.equal(words[words.indexOf("--agent") + 1], "pre-push-review-lead");
+      const defined = JSON.parse(words[words.indexOf("--agents") + 1]!) as Record<string, { tools: string[] }>;
+      assert.deepEqual(defined["pre-push-review-lead"]!.tools, leadTools(["lens-1", "lens-2"]));
+      assert.deepEqual(defined["pre-push-review-lead"]!.tools, ["Agent(lens-1,lens-2)", "Read", "Grep", "Glob"]);
+      assert.doesNotMatch(defined["pre-push-review-lead"]!.tools.join(","), /Bash|Edit|Write/);
       assert.ok(words.includes("--strict-mcp-config"));
       assert.equal(words[words.indexOf("--setting-sources") + 1], "user");
       assert.ok(words.includes("--disallowedTools"));
@@ -4660,7 +4664,7 @@ describe("liveReviewHost", () => {
 
       const words = wordsOf(commandOf(runs[0]!));
       const defined = JSON.parse(words[words.indexOf("--agents") + 1]!) as Record<string, { description: string; prompt: string; tools: string[]; model: string }>;
-      assert.deepEqual(Object.keys(defined).sort(), ["lens-1", "lens-2", "lens-3"]);
+      assert.deepEqual(Object.keys(defined).sort(), ["lens-1", "lens-2", "lens-3", "pre-push-review-lead"]);
       for (const member of team) {
         const one = defined[member.agent]!;
         assert.deepEqual(one.tools, ["Read", "Grep", "Glob"]);
@@ -4686,7 +4690,8 @@ describe("liveReviewHost", () => {
       const words = wordsOf(commandOf(runs[0]!));
       const word = words[words.indexOf("--agents") + 1]!;
       assert.ok(Buffer.byteLength(word) < MAX_AGENTS_WORD_BYTES / 2, `${Buffer.byteLength(word)} bytes`);
-      assert.equal(Object.keys(JSON.parse(word) as object).length, MAX_REVIEWERS_PER_ROUND);
+      // The lenses and the lead's own definition.
+      assert.equal(Object.keys(JSON.parse(word) as object).length, MAX_REVIEWERS_PER_ROUND + 1);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
     }

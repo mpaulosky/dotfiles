@@ -10,7 +10,10 @@ import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import type { AgentProvider } from "@ai-hero/sandcastle";
 import {
   isRoleTimeout,
+  LEAD_AGENT_NAME,
   LEAD_DENIED_TOOLS,
+  LEAD_DESCRIPTION,
+  LEAD_PROMPT,
   leadTools,
   LEDGER_DENIED_TOOLS,
   MAX_AGENTS_WORD_BYTES,
@@ -519,6 +522,15 @@ describe("the pre-push review lead role", () => {
 });
 
 describe("LEAD_DENIED_TOOLS", () => {
+  // A deny list can't name a tool a later release adds, so this is a second layer behind the definition's tools, not a guarantee.
+  it("also denies the known tools that run commands, write files, reach the network, load skills or enter worktrees, so a lead that starts without its definition's tools is still held back from them", () => {
+    const known = ["Bash", "BashOutput", "KillShell", "Monitor", "PowerShell", "Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Skill", "EnterWorktree"];
+    for (const tool of known) assert.ok(LEAD_DENIED_TOOLS.includes(tool), `${tool} isn't denied`);
+    // `Task` is the old name of the Agent tool and may alias it in deny rules, and a bare `Agent` is the tool itself: denying either could leave the lead unable to start a lens.
+    // The Agent(...) allowlist already controls what it spawns.
+    for (const tool of ["Task", "Agent"]) assert.ok(!LEAD_DENIED_TOOLS.includes(tool), `${tool} would deny the lead its Agent tool`);
+  });
+
   it("holds the ledger deny list and denies every built-in subagent type, so the lead starts only the lens-<id> agents defined for it", () => {
     for (const rule of LEDGER_DENIED_TOOLS) assert.ok(LEAD_DENIED_TOOLS.includes(rule), rule);
     for (const type of ["general-purpose", "Explore", "Plan", "statusline-setup", "claude-code-guide", "output-style-setup"]) {
@@ -553,24 +565,40 @@ describe("restrictedClaudeCode's --agents", () => {
     assert.ok(at >= 0, `no --agents in ${command}`);
     return JSON.parse(words[at + 1]!);
   };
+  // The definitions `--agents` carries besides the lead's own.
+  const lensesOf = (command: string): unknown => {
+    const { [LEAD_AGENT_NAME]: _lead, ...lenses } = agentsJson(command) as Record<string, unknown>;
+    return lenses;
+  };
 
   it("hands claude the definitions as one JSON word, by name", () => {
     const agents = { "lens-1": definition(), "lens-2": definition({ description: "Reviews through the Tests lens" }) };
 
-    assert.deepEqual(agentsJson(commandOf(leadFor(agents))), agents);
+    assert.deepEqual(lensesOf(commandOf(leadFor(agents))), agents);
   });
 
   it("keeps a single quote, a double quote, a dollar sign and a backtick in a definition intact through the shell", () => {
     const agents = { "lens-1": definition({ description: `it's the "Edge cases" lens $HOME \`id\``, prompt: `Don't $(touch /tmp/x); read 'the file'` }) };
 
-    assert.deepEqual(agentsJson(commandOf(leadFor(agents))), agents);
+    assert.deepEqual(lensesOf(commandOf(leadFor(agents))), agents);
   });
 
-  it("still emits --tools, --strict-mcp-config, --setting-sources user and the deny list beside --agents", () => {
+  it("defines the lead in --agents with the Agent allowlist as its own tools and starts it with --agent, since --tools gives a session no Agent tool for Agent(name,...)", () => {
+    const command = commandOf(leadFor({ "lens-1": definition(), "lens-2": definition() }));
+    const words = wordsOf(command);
+    const lead = (agentsJson(command) as Record<string, { tools: string[]; model: string }>)[LEAD_AGENT_NAME]!;
+
+    assert.equal(LEAD_AGENT_NAME, "pre-push-review-lead");
+    assert.deepEqual(lead.tools, ["Agent(lens-1,lens-2)", ...REVIEWER_TOOLS]);
+    assert.equal(lead.model, "sonnet");
+    assert.equal(words[words.indexOf("--agent") + 1], LEAD_AGENT_NAME);
+    assert.ok(!words.includes("--tools"), "--tools would leave the lead no Agent tool");
+  });
+
+  it("still emits --strict-mcp-config, --setting-sources user and the deny list beside --agents", () => {
     const command = commandOf(leadFor({ "lens-1": definition() }));
     const words = wordsOf(command);
 
-    assert.equal(words[words.indexOf("--tools") + 1], leadTools(["lens-1"]).join(","));
     assert.ok(words.includes("--strict-mcp-config"));
     assert.equal(words[words.indexOf("--setting-sources") + 1], "user");
     assert.ok(words.includes("--disallowedTools"));
@@ -592,6 +620,35 @@ describe("restrictedClaudeCode's --agents", () => {
     assert.throws(() => restrictedClaudeCode("sonnet", "high", { ...lead, tools: undefined, agents }), /Agent/, "no --tools at all");
   });
 
+  it("reserves the lead's own name: a subagent called pre-push-review-lead is refused, not silently replaced by the lead, and the allowlist can't name the lead", () => {
+    const agents = { "lens-1": definition(), [LEAD_AGENT_NAME]: definition() };
+
+    assert.throws(() => restrictedClaudeCode("sonnet", "high", { ...lead, tools: ["Agent(lens-1,pre-push-review-lead)", ...REVIEWER_TOOLS], agents }), /reserved/);
+    assert.throws(() => leadTools([LEAD_AGENT_NAME]), /reserved/);
+    assert.throws(() => leadTools(["lens-1", LEAD_AGENT_NAME]), /reserved/);
+  });
+
+  it("refuses a lead that holds a tool beyond the Agent allowlist and the reviewers' own, since its definition is now the only tool ceiling", () => {
+    const agents = { "lens-1": definition() };
+    const withTools = (tools: readonly string[]) => () => restrictedClaudeCode("sonnet", "high", { ...lead, tools, agents });
+
+    assert.doesNotThrow(withTools(leadTools(["lens-1"])));
+    // Anything that isn't exactly Agent(...) or one of the reviewers' own tools lands in the refusal, an odd spelling of Agent and a scoped Read among them.
+    const extras = ["Bash", "Edit", "Write", "WebFetch", "WebSearch", "NotebookEdit", "Bash(git status)", "mcp__x__y", "Task", "Agent (lens-1)", "agent", "AgentFoo", "Read(//**)", ""];
+    for (const extra of extras) {
+      assert.throws(withTools([...leadTools(["lens-1"]), extra]), /may hold only Agent\(\.\.\.\) and Read, Grep, Glob/, JSON.stringify(extra));
+    }
+  });
+
+  it("writes the lead's description and prompt from LEAD_DESCRIPTION and LEAD_PROMPT, which are not empty", () => {
+    const command = commandOf(leadFor({ "lens-1": definition() }));
+    const defined = (agentsJson(command) as Record<string, { description: string; prompt: string }>)[LEAD_AGENT_NAME]!;
+
+    assert.ok(LEAD_DESCRIPTION.trim().length > 0 && LEAD_PROMPT.trim().length > 0);
+    assert.equal(defined.description, LEAD_DESCRIPTION);
+    assert.equal(defined.prompt, LEAD_PROMPT);
+  });
+
   it("keeps the prompt on stdin and the flags before -p -", () => {
     const result = restrictedClaudeCode("sonnet", "high", leadFor({ "lens-1": definition() })).buildPrintCommand({
       prompt: "the prompt",
@@ -606,10 +663,26 @@ describe("restrictedClaudeCode's --agents", () => {
   it("adds no --agents when none are given", () => {
     assert.doesNotMatch(commandOf(lead), /--agents/);
     assert.doesNotMatch(commandOf({ tools: REVIEWER_TOOLS }), /--agents/);
+    // `--agent` would start a reviewer as an agent nobody defined for it.
+    for (const restrictions of [lead, { tools: REVIEWER_TOOLS }]) assert.ok(!wordsOf(commandOf(restrictions)).includes("--agent"));
   });
 
-  it("applies --agents even when the Agent allowlist is its only companion", () => {
-    assert.ok(wordsOf(commandOf({ tools: leadTools(["lens-1"]), agents: { "lens-1": definition() } })).includes("--agents"));
+  it("applies --agents with the lead's required companions", () => {
+    assert.ok(wordsOf(commandOf(leadFor({ "lens-1": definition() }))).includes("--agents"));
+  });
+
+  it("refuses subagents without the layers that back the lead's definition: its denied tools, strict MCP and the user's settings only", () => {
+    const agents = { "lens-1": definition() };
+    const build = (restrictions: Partial<typeof lead>) => () => restrictedClaudeCode("sonnet", "high", { ...lead, tools: leadTools(["lens-1"]), agents, ...restrictions });
+
+    assert.doesNotThrow(build({}));
+    assert.throws(build({ denied: undefined }), /must also/);
+    assert.throws(build({ denied: [] }), /must also/);
+    for (const rule of LEAD_DENIED_TOOLS) assert.throws(build({ denied: LEAD_DENIED_TOOLS.filter((one) => one !== rule) }), /must also/, rule);
+    assert.throws(build({ strictMcp: false }), /must also/);
+    assert.throws(build({ strictMcp: undefined }), /must also/);
+    assert.throws(build({ userSettingsOnly: false }), /must also/);
+    assert.throws(build({ userSettingsOnly: undefined }), /must also/);
   });
 
   // The restrictions with the lead's tools written by hand, so leadTools' own validation is not in the way and only agentsJson can refuse a name or an empty set.
@@ -650,7 +723,11 @@ describe("restrictedClaudeCode's --agents", () => {
   });
 
   // The size of the word the shell is handed: the JSON in single quotes, each single quote inside it written as four bytes ('\'').
-  const wordBytes = (agents: Record<string, SubagentDefinition>) => Buffer.byteLength(`'${JSON.stringify(agents).replaceAll("'", `'\\''`)}'`);
+  // The lead's own definition goes in the word too, so the test builds the same JSON restrictedClaudeCode does (the real function throws over the cap).
+  const wordBytes = (agents: Record<string, SubagentDefinition>) => {
+    const lead = { description: LEAD_DESCRIPTION, prompt: LEAD_PROMPT, tools: leadTools(Object.keys(agents)), model: "sonnet" };
+    return Buffer.byteLength(`'${JSON.stringify({ ...agents, [LEAD_AGENT_NAME]: lead }).replaceAll("'", `'\\''`)}'`);
+  };
   const build = (agents: Record<string, SubagentDefinition>) => () => restrictedClaudeCode("sonnet", "high", leadFor(agents));
   // One definition whose word is exactly `bytes` long, padded with `filler` (one byte per character unless it says otherwise).
   const sized = (bytes: number, filler = "d", perFiller = 1) => {

@@ -128,7 +128,7 @@ describe("the review lead's fixed role", () => {
   });
 });
 
-// The switch stays on "sequential" until a run in a real sandbox settles the issue's open questions, and a typo must not silently pick a path.
+// The switch stays on "sequential" until the items references/pre-push-review.md lists as open are settled and a person accepts the relay risk, and a typo must not silently pick a path.
 describe("reviewerMode", () => {
   it("is sequential when SANDCASTLE_REVIEWERS is unset or empty", () => {
     assert.equal(reviewerMode({}), "sequential");

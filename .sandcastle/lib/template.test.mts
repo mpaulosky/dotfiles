@@ -472,8 +472,8 @@ describe("the docs on the host-side review's PR state, record and follow-up issu
   });
 });
 
-// A round's reviewers can run as parallel subagents of one lead session, behind a switch that stays on the sequential path until a run in a real sandbox
-// has settled the questions the unit tests can't see (mpaulosky/dotfiles#399). The docs must say how to switch, who the lead is and how its answer is read.
+// A round's reviewers can run as parallel subagents of one lead session, behind a switch that stays on the sequential path until the items still open in the docs are settled
+// (a real-sandbox run showed the rest; mpaulosky/dotfiles#399, #454). The docs must say how to switch, who the lead is and how its answer is read.
 describe("the docs on the reviewers as parallel subagents of one lead session", () => {
   const text = (path: string) => readFileSync(path, "utf8").replace(/\s+/g, " ");
   const reference = text(join(skill, "references/pre-push-review.md"));
@@ -484,7 +484,7 @@ describe("the docs on the reviewers as parallel subagents of one lead session", 
     assert.notEqual(section, "", "the section 'Sandcastle runs the review on the host' is not in references/pre-push-review.md");
   });
 
-  it("the host-side section names both modes and the switch, and says the default stays sequential until a real-sandbox run", () => {
+  it("the host-side section names both modes and the switch, and says the default stays sequential until the open items are settled", () => {
     assert.match(section, /`SANDCASTLE_REVIEWERS`/);
     assert.match(section, /`sequential`/);
     assert.match(section, /`subagents`/);

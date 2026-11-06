@@ -54,10 +54,11 @@ export const LEDGER_DENIED_TOOLS: readonly string[] = [
 ];
 
 // What a role's agent is held to besides its model and effort: the only tools
-// it gets, rules it is denied, and whether only the MCP servers named on the
+// it gets (with `agents`, they are written as the `tools` of the lead's own `--agents` definition and no `--tools` is passed), rules it is denied, and whether only the MCP servers named on the
 // command line may start, and whether Claude Code reads only the user's settings, not the branch's .claude/settings.json (whose hooks
 // would run shell commands, with the sandbox's environment, in a run that is meant to hold no shell). `agents` adds the subagents defined on the command line
-// (`--agents`); a role that has them must hold exactly the tool `Agent(<those names>)` (leadTools), and each subagent only some of REVIEWER_TOOLS.
+// (`--agents`); a role that has them must hold exactly the tool `Agent(<those names>)` (leadTools) beside only REVIEWER_TOOLS, must set `denied` to LEAD_DENIED_TOOLS and both
+// flags, and each subagent holds only some of REVIEWER_TOOLS.
 export type AgentRestrictions = {
   tools?: readonly string[];
   denied?: readonly string[];
@@ -76,34 +77,59 @@ export const MAX_AGENTS_WORD_BYTES = 60_000;
 
 // The built-in subagent types of Claude Code known today. This list is a second layer only: it can't name a type a later release adds or one from the user's own
 // `~/.claude/agents` or a plugin (`--setting-sources user` still loads those), so the lead's `Agent` tool is also restricted to the defined `lens-<id>` agents (leadTools).
+// A real `claude` 2.1.317 showed that `--tools 'Agent(a,b),Read'` gives the session no Agent tool at all and a bare `Agent` there starts user-level and plugin agents as well,
+// so the lead is itself defined in `--agents` (LEAD_AGENT_NAME) and started with `--agent`: its own `tools` list is where `Agent(a,b)` is enforced (every other type is "not found").
 // `general-purpose` holds every tool, a shell and the network among them, and the lead reads answers from reviewers that read branch-planted files.
 const BUILTIN_SUBAGENT_TYPES = ["general-purpose", "Explore", "Plan", "statusline-setup", "claude-code-guide", "output-style-setup"] as const;
 
 // What the lead of a review's subagents is denied: the ledger rules, and every known built-in subagent type (the allowlist in leadTools is the first layer).
-export const LEAD_DENIED_TOOLS: readonly string[] = [...LEDGER_DENIED_TOOLS, ...BUILTIN_SUBAGENT_TYPES.map((type) => `Agent(${type})`)];
+// The lead's own definition holds none of the tools that run commands, write files, reach the network, load skills or enter worktrees, but `--tools` no longer narrows the session, so the
+// ones known today are denied too, as a second layer behind the definition's tools: a deny list can't name a tool a later release adds, so it is not a guarantee should `--agent` not
+// apply the definition's tools. `Task` (the old name of Agent) and a bare `Agent` are left out on purpose: a deny rule may alias them to the lead's own Agent tool, and the allowlist covers spawning.
+const LEAD_NEVER_TOOLS = [
+  "Bash", "BashOutput", "KillShell", "Monitor", "PowerShell", "Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Skill", "EnterWorktree",
+] as const;
+export const LEAD_DENIED_TOOLS: readonly string[] = [...LEDGER_DENIED_TOOLS, ...BUILTIN_SUBAGENT_TYPES.map((type) => `Agent(${type})`), ...LEAD_NEVER_TOOLS];
 
 // The subagent names `--agents` takes: lowercase ASCII, so a name is never a shell or JSON surprise (nor a wildcard, comma or parenthesis in an allowlist).
 const AGENT_NAME = /^[a-z][a-z0-9-]*$/;
 
+// The name the lead is defined under in `--agents`, and started as with `--agent`.
+export const LEAD_AGENT_NAME = "pre-push-review-lead";
+
+// The lead's `description` and `prompt` in `--agents`: under `--agent` the prompt is the session's system prompt, and the round's own prompt arrives on stdin.
+export const LEAD_DESCRIPTION = "Starts the round's reviewers and relays their answers";
+export const LEAD_PROMPT = "Follow the task you are given.";
+
+// Throws for a subagent name that is the lead's own, which `--agents` would let the lead's definition silently replace, and which the lead's allowlist must not name.
+function checkNotLeadName(name: string): void {
+  if (name === LEAD_AGENT_NAME) throw new Error(`the agent name ${LEAD_AGENT_NAME} is reserved for the lead`);
+}
+
 // The tools the lead of a review's subagents gets: `Agent(<names>)`, which lets it start only those subagents and no other, and the reviewers' own tools.
-// Whether Claude Code honours `Agent(name,...)` in `--tools` is to be confirmed in a real sandbox; restrictedClaudeCode refuses a lead whose Agent tool isn't exactly
-// this, and the deny list in LEAD_DENIED_TOOLS stays beside it.
+// Claude Code honours `Agent(name,...)` in a `--agents` definition's `tools`, not in `--tools`; restrictedClaudeCode puts these tools there, refuses a lead whose Agent tool
+// isn't exactly this beside only the reviewers' own tools, and requires the deny list in LEAD_DENIED_TOOLS beside it.
 export function leadTools(agentNames: readonly string[]): string[] {
   if (agentNames.length === 0) throw new Error("the lead's Agent tool needs at least one agent to allow");
   for (const name of agentNames) {
+    checkNotLeadName(name);
     if (!AGENT_NAME.test(name)) throw new Error(`an agent name for the lead's Agent tool must be lowercase ASCII letters, digits and hyphens, starting with a letter, not ${JSON.stringify(name.slice(0, 40))}`);
   }
   return [`Agent(${agentNames.join(",")})`, ...REVIEWER_TOOLS];
 }
 
-// Throws unless `tools` holds one `Agent(...)` entry naming exactly `agentNames` and no bare `Agent`: a lead with subagents defined that may start any other subagent
-// would break the 'no shell, no network, no write tool' claim.
+// Throws unless `tools` holds one `Agent(...)` entry naming exactly `agentNames` and no bare `Agent` (a lead that may start any other subagent would break the 'no shell, no
+// network, no write tool' claim), and nothing besides it but REVIEWER_TOOLS: with no `--tools` to narrow the session, the lead's definition is the only tool ceiling.
 function checkLeadAgentTool(tools: readonly string[] | undefined, agentNames: readonly string[]): void {
   const agentTools = (tools ?? []).filter((tool) => tool === "Agent" || tool.startsWith("Agent("));
   const expected = `Agent(${agentNames.join(",")})`;
   if (agentTools.length !== 1 || agentTools[0] !== expected) {
     throw new Error(`a role with subagents defined must have the tool ${expected} and no other Agent tool, so it starts only those agents; got ${JSON.stringify(agentTools)}`);
   }
+  // The lead's definition is the only ceiling on its tools (no `--tools` narrows the session), so nothing but the reviewers' own tools may sit beside the Agent tool.
+  const others = (tools ?? []).filter((tool) => tool !== "Agent" && !tool.startsWith("Agent("));
+  const extra = others.filter((tool) => !(REVIEWER_TOOLS as readonly string[]).includes(tool));
+  if (extra.length > 0) throw new Error(`a role with subagents defined may hold only Agent(...) and ${REVIEWER_TOOLS.join(", ")} as tools, not the tool(s) ${JSON.stringify(extra)}`);
 }
 
 const PRINT_COMMAND_START = "claude --print ";
@@ -115,10 +141,11 @@ function shellWord(value: string): string {
 
 // `agents` as the JSON `--agents` takes. Throws for a name that isn't plain, for none at all (`{}` is not the same as leaving `agents` out),
 // and for a shell word past MAX_AGENTS_WORD_BYTES, so a too-long command fails where the provider is built and not at exec.
-function agentsJson(agents: Readonly<Record<string, SubagentDefinition>>): string {
+function agentsJson(agents: Readonly<Record<string, SubagentDefinition>>, lead?: { model: string; tools: readonly string[] }): string {
   const names = Object.keys(agents);
   if (names.length === 0) throw new Error("the agents to define for --agents are empty: give none or at least one");
   for (const name of names) {
+    checkNotLeadName(name);
     if (!AGENT_NAME.test(name)) throw new Error(`an agent name for --agents must be lowercase ASCII letters, digits and hyphens, starting with a letter, not ${JSON.stringify(name.slice(0, 40))}`);
   }
   // The ceiling on what a subagent can do is its own tools, so the builder holds it and not only the one caller that builds them today.
@@ -127,7 +154,11 @@ function agentsJson(agents: Readonly<Record<string, SubagentDefinition>>): strin
       throw new Error(`the subagent ${name} must hold some of ${REVIEWER_TOOLS.join(", ")} and no other tool, not ${JSON.stringify(tools)}`);
     }
   }
-  const json = JSON.stringify(agents);
+  const json = JSON.stringify(
+    lead === undefined
+      ? agents
+      : { ...agents, [LEAD_AGENT_NAME]: { description: LEAD_DESCRIPTION, prompt: LEAD_PROMPT, tools: lead.tools, model: lead.model } },
+  );
   const bytes = Buffer.byteLength(shellWord(json));
   if (bytes > MAX_AGENTS_WORD_BYTES) throw new Error(`the --agents word is ${bytes} bytes once quoted for the shell, over the limit of ${MAX_AGENTS_WORD_BYTES} bytes`);
   return json;
@@ -145,10 +176,18 @@ export function restrictedClaudeCode(
 ): sandcastle.AgentProvider {
   const provider = build(model, { effort });
   const { tools, denied, strictMcp, userSettingsOnly, agents: subagents } = restrictions;
-  if (subagents !== undefined) checkLeadAgentTool(tools, Object.keys(subagents));
+  if (subagents !== undefined) {
+    checkLeadAgentTool(tools, Object.keys(subagents));
+    // The layers behind the definition's tools: the lead's denials, MCP servers only from the command line, and the user's settings only.
+    const denies = new Set(denied ?? []);
+    if (!LEAD_DENIED_TOOLS.every((rule) => denies.has(rule)) || strictMcp !== true || userSettingsOnly !== true) {
+      throw new Error("a role with subagents defined must also set denied to the lead's denied tools, strictMcp and userSettingsOnly: they back the definition's tools");
+    }
+  }
   const flags = [
-    ...(tools === undefined ? [] : ["--tools", shellWord(tools.join(","))]),
-    ...(subagents === undefined ? [] : ["--agents", shellWord(agentsJson(subagents))]),
+    // With subagents the tools go on the lead's own definition (see above); `--tools` would leave it no Agent tool.
+    ...(tools === undefined || subagents !== undefined ? [] : ["--tools", shellWord(tools.join(","))]),
+    ...(subagents === undefined ? [] : ["--agents", shellWord(agentsJson(subagents, { model, tools: tools ?? [] })), "--agent", LEAD_AGENT_NAME]),
     ...(strictMcp === true ? ["--strict-mcp-config"] : []),
     ...(userSettingsOnly === true ? ["--setting-sources", "user"] : []),
     ...(denied === undefined || denied.length === 0 ? [] : ["--disallowedTools", ...denied.map(shellWord)]),

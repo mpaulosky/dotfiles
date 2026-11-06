@@ -29,7 +29,9 @@ const filesUnder = (folder: string): string[] =>
 
 // The widest gap between naming main.mts or status.mts and saying they stay exempt that still counts as one claim: a comment wraps lines, and a file name holds a dot.
 const MAIN_STATUS_EXEMPT_SPAN = 200;
-const claimsMainOrStatusExempt = (text: string) => new RegExp(`(main|status)\\.mts[\\s\\S]{0,${MAIN_STATUS_EXEMPT_SPAN}}?(stay|remain)s? exempt`).test(text);
+// Case-blind, and `[\s/]+` lets the phrase wrap onto a `//` comment line; "are exempt" and "is still exempt" count as the claim too.
+const claimsMainOrStatusExempt = (text: string) =>
+  new RegExp(`(main|status)\\.mts[\\s\\S]{0,${MAIN_STATUS_EXEMPT_SPAN}}?((stay|remain)s?|(are|is)([\\s/]+still)?)[\\s/]+exempt`, "i").test(text);
 
 describe("OWNED_PATHS against the Template's template/owned/", () => {
   it("covers every file the Template's Owned folder holds", () => {
@@ -197,9 +199,19 @@ describe("the files a re-Apply may write without a review", () => {
     assert.equal(claimsMainOrStatusExempt("main.mts and status.mts go in REVIEWED_ON_REAPPLY"), false);
   });
 
+  it("catches the claim when the phrase wraps, is capitalised, or says they are exempt, and when a dot sits between the file name and the claim", () => {
+    assert.equal(claimsMainOrStatusExempt("main.mts and status.mts stay\n// exempt for now"), true, "a wrap inside the phrase");
+    assert.equal(claimsMainOrStatusExempt("main.mts and status.mts stay\r\n// exempt"), true, "a CRLF wrap inside the phrase");
+    assert.equal(claimsMainOrStatusExempt("Both are host code. Main.mts and Status.mts Stay Exempt."), true, "capitals");
+    assert.equal(claimsMainOrStatusExempt("status.mts and main.mts are exempt"), true, "are exempt");
+    assert.equal(claimsMainOrStatusExempt("`main.mts` is still exempt"), true, "is still exempt");
+    assert.equal(claimsMainOrStatusExempt("`.sandcastle/main.mts` (see lib/x.mts). They stay exempt."), true, "a dot between the name and the claim");
+    assert.equal(claimsMainOrStatusExempt("main.mts and status.mts are not exempt"), false, "not exempt");
+  });
+
   it("says in lib/review-ledger.mts that main.mts and status.mts are reviewed, and that a person starts the hardening reviewers (mpaulosky/dotfiles#462)", () => {
     const source = readFileSync(join(root, ".sandcastle/lib/review-ledger.mts"), "utf8");
-    const comment = source.slice(0, source.indexOf("export const OWNED_PATHS"));
+    const comment = source.slice(0, source.indexOf("export const REVIEWED_ON_REAPPLY"));
 
     assert.equal(claimsMainOrStatusExempt(comment), false, "the comment says main.mts or status.mts stay exempt");
     assert.match(comment, /main\.mts/, "the comment doesn't name main.mts among the reviewed files");

@@ -713,6 +713,16 @@ describe("the docs of the Owned role prompts (mpaulosky/dotfiles#392)", () => {
     assert.match(text, /REVIEWED_ON_REAPPLY[\s\S]*?review-prompt\.md/);
   });
 
+  it("records the subagents mode's allowlist probe in references/pre-push-review.md (mpaulosky/dotfiles#454)", () => {
+    const text = readFileSync(join(skill, "references/pre-push-review.md"), "utf8");
+
+    assert.match(text, /Allowlist probe \(local `claude` 2\.1\.317/);
+    assert.match(text, /started `lens-1` and nothing else/);
+    assert.match(text, /user-level agent and the plugin agent were all `not found\. Available agents: lens-1`/);
+    assert.match(text, /no Bash\s+tool either way/);
+    assert.match(text, /Still open, and the default doesn't flip/);
+  });
+
   it("says in references/pre-push-review.md that the workflows, hooks, scripts and lib/ stay exempt on a re-Apply, and that a new Owned file is exempt only by a decision (mpaulosky/dotfiles#394)", () => {
     const text = readFileSync(join(skill, "references/pre-push-review.md"), "utf8");
 

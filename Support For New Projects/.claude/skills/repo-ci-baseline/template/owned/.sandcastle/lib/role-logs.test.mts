@@ -64,9 +64,25 @@ const hostLines = [
   "Run complete: reached 3 iteration(s) without completion signal.",
 ];
 
-// copyReviewerLogs with the views going to <logsDir>/report, as most tests below read them from there.
-const copyTo = (logsDir: string, fs?: RoleLogFs, warn?: (line: string) => void, secrets?: readonly string[]) =>
-  copyReviewerLogs(logsDir, join(logsDir, "report"), fs, warn, secrets);
+// A record of builds that wrote every `*-reviewer.log` in `names`, issue numbers in sorted order from 1: only a log of a build the run started is copied.
+const knowing = (names: readonly string[]) => {
+  const builds = new BuildLogs();
+  names.filter((name) => name.endsWith("-reviewer.log")).sort().forEach((name, i) => builds.add(i + 1, name.replace(/-reviewer\.log$/, "")));
+  return builds;
+};
+
+// The files a folder lists, or none when it can't be listed (copyReviewerLogs says that itself).
+const listed = (logsDir: string, fs?: RoleLogFs) => {
+  try {
+    return (fs ?? liveRoleLogFs).list(logsDir);
+  } catch {
+    return [];
+  }
+};
+
+// copyReviewerLogs with the views going to <logsDir>/report, as most tests below read them from there. Every log the folder lists is a build's.
+const copyTo = (logsDir: string, fs?: RoleLogFs, warn?: (line: string) => void, secrets?: readonly string[], builds?: BuildLogs) =>
+  copyReviewerLogs(logsDir, join(logsDir, "report"), fs, warn, secrets, builds ?? knowing(listed(logsDir, fs)));
 
 describe("allowlistedView", () => {
   it("keeps every host status line with its numbers masked, and the start line without its timestamp", () => {
@@ -83,17 +99,30 @@ describe("allowlistedView", () => {
     // A thousand lines of each kind are still one line of each.
     const many = Array.from({ length: 1000 }, (_, i) => ["Agent started", `Bash(${i})`, `fatal ${i}`, "Agent stopped"][i % 4]!).join("\n");
     assert.equal(allowlistedView(many), "Agent started\nAgent stopped\nBash(...)\n[error line: fatal]\n");
-    // A line between kept lines of the same kind does not show where it sat: only that something was left out.
+    // A line of prose between two host lines does not show where it sat: only that something was left out.
     assert.equal(allowlistedView("Agent started\nprose\nAgent stopped"), "[... lines left out]\nAgent started\nAgent stopped\n");
     assert.equal(allowlistedView("Agent started\n\n\nAgent stopped\n"), "Agent started\nAgent stopped\n");
   });
 
-  it("shows at most one line for each fixed host line, tool and error word", () => {
-    const hostKinds = new Set(hostLines.map((line) => line.replace(/\d+/g, "#")));
-    assert.ok(allowlistedView(hostLines.concat(hostLines).join("\n")).split("\n").length <= hostKinds.size + 1);
+  it("shows one line for each fixed host line, tool and error word, however often each appears: 30 host kinds, 15 tools, 26 error words", () => {
+    const masked = [...new Set(hostLines.map((line) => (line.startsWith("--- Run started") ? "--- Run started ---" : line.replace(/\d+/g, "#"))))].sort();
+    assert.equal(allowlistedView(hostLines.concat(hostLines).join("\n")), `${masked.join("\n")}\n`);
     const tools = ["Bash", "Read", "Grep", "Glob", "Edit", "MultiEdit", "Write", "NotebookEdit", "Task", "Agent", "TodoWrite", "WebFetch", "WebSearch", "Skill"];
-    const view = allowlistedView([...tools, ...tools, "mcp__a__b(x)", "mcp__c__d(y)"].map((name) => (name.includes("(") ? name : `${name}(x)`)).join("\n"));
-    assert.equal(view.split("\n").filter(Boolean).length, tools.length + 1);
+    const toolLines = [...tools.map((name) => `${name}(x)`), "mcp__a__b(x)", "mcp__c__d(y)"];
+    const toolView = allowlistedView(toolLines.concat(toolLines).join("\n"));
+    assert.equal(toolView, `${[...tools.map((name) => `${name}(...)`), "mcp__(...)"].sort().join("\n")}\n`);
+    assert.equal(toolView.split("\n").filter(Boolean).length, 15);
+    const words = ["abort", "aborted", "error", "errors", "fail", "failed", "failure", "failures", "exception", "fatal", "panic", "timed out", "timeout", "killed",
+      "terminated", "exit code", "exited code", "exit with", "exited with", "signal", "crash", "crashed", "unauthorized", "unauthorised", "rate limit", "overloaded"];
+    const errorView = allowlistedView(words.concat(words).map((word) => `x ${word} y`).join("\n"));
+    assert.equal(errorView, `${words.map((word) => `[error line: ${word}]`).sort().join("\n")}\n`);
+  });
+
+  it("asks the caller's check only about an error line that holds no run of token characters, once for each", () => {
+    const asked: string[] = [];
+    const held = (line: string) => (asked.push(line), false);
+    allowlistedView(["prose", "Agent started", "Bash(x)", "fatal one", `fatal ${"A".repeat(REPORT_TOKEN_RUN)}`, "panic two", ""].join("\n"), held);
+    assert.deepEqual(asked, ["fatal one", "panic two"]);
   });
 
   it("limits every number in a host line to three digits (two after a decimal point), and needs one", () => {
@@ -195,8 +224,9 @@ describe("allowlistedView", () => {
   it("keeps a fixed message for each word that names an error, and only as a word", () => {
     const words = [
       "abort", "aborted", "error", "errors", "fail", "failed", "failure", "failures", "exception", "fatal", "panic", "timed out", "timeout",
-      "killed", "terminated", "exit code", "exited with", "signal", "crash", "crashed", "unauthorized", "unauthorised", "rate limit", "overloaded",
+      "killed", "terminated", "exit code", "exited code", "exit with", "exited with", "signal", "crash", "crashed", "unauthorized", "unauthorised", "rate limit", "overloaded",
     ];
+    assert.equal(words.length, 26);
     for (const word of words) assert.equal(allowlistedView(`it ${word} 1 now`), `[error line: ${word}]\n`, word);
     for (const near of ["panicky", "fatally", "terrorism", "errorless", "exit codes", "unauthorizeds"]) {
       assert.equal(allowlistedView(`it ${near} now`), "[... lines left out]\n", near);
@@ -274,7 +304,7 @@ describe("copyReviewerLogs", () => {
   it("copies only the reviewer logs, as their view, into the report folder", () => {
     const { fs, written } = fakeFs({ "a-reviewer.log": "aborted", "a-backend.log": "other" });
     assert.deepEqual(copyTo("logs", fs, none, []), ["reviewer-1.log"]);
-    assert.deepEqual(written, { "logs/report/reviewer-1.log": "[error line: aborted]\n", "logs/report/index.txt": "reviewer-1.log: a build this run did not start\n" });
+    assert.deepEqual(written, { "logs/report/reviewer-1.log": "[error line: aborted]\n", "logs/report/index.txt": "reviewer-1.log: issue #1\n" });
   });
 
   it("never copies the review lead's log (issue 399), which lists the subagents' answers", () => {
@@ -303,7 +333,7 @@ describe("copyReviewerLogs", () => {
       writeFileSync(join(out, "old-reviewer.log"), "left over\n");
       mkdirSync(join(dir, "report"));
       writeFileSync(join(dir, "report", "planted-reviewer.log"), "planted\n");
-      assert.deepEqual(copyReviewerLogs(dir, out, undefined, () => undefined, []), ["reviewer-1.log"]);
+      assert.deepEqual(copyReviewerLogs(dir, out, undefined, () => undefined, [], knowing(["ok-reviewer.log"])), ["reviewer-1.log"]);
       assert.deepEqual(readdirSync(out).sort(), ["index.txt", "reviewer-1.log"]);
       assert.deepEqual(readdirSync(join(dir, "report")), ["planted-reviewer.log"], "the checkout's report folder was touched");
       assert.deepEqual(readdirSync(dir).sort(), ["ok-reviewer.log", "report"], "something was written under the logs folder");
@@ -489,7 +519,7 @@ describe("copyReviewerLogs", () => {
     const { fs, written } = fakeFs({ "dir-reviewer.log": "x" });
     copyTo("logs", { ...fs, read: () => { throw new Error("EISDIR"); } }, (line) => warnings.push(line), []);
     assert.equal(warnings.length, 1);
-    assert.deepEqual(written, { "logs/report/index.txt": "reviewer-1.log: a build this run did not start (not copied)\n" });
+    assert.deepEqual(written, { "logs/report/index.txt": "reviewer-1.log: issue #1 (not copied)\n" });
   });
 
   it("reads the sandbox's secrets from .sandcastle/.env by default", () => {
@@ -529,47 +559,64 @@ describe("copyReviewerLogs", () => {
   });
 });
 
-// At most REPORT_LOG_LIMIT logs are copied: the sandbox chooses how many there are.
+// Only the logs of builds this run started are copied, and at most REPORT_LOG_LIMIT of them: a sandbox that can write the logs folder
+// could add files of its own, and each view is a few dozen bits it would choose.
 describe("the log limit", () => {
   const name = (i: number) => `log-${String(i).padStart(3, "0")}-reviewer.log`;
   // Listed in reverse, each with a view of its own (a tool name that depends on its position), so which logs were copied and in what order shows.
   const filesOf = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, i) => count - 1 - i).map((i) => [name(i), `${["Bash", "Read", "Grep"][i % 3]}(${i})`]));
   const more = `more than ${REPORT_LOG_LIMIT} reviewer logs: the rest were not copied`;
+  const others = "other reviewer logs in the folder were not copied: no build of this run wrote them";
+  const buildsFor = (count: number) => {
+    const builds = new BuildLogs();
+    for (let i = 0; i < count; i++) builds.add(100 + i, name(i).replace(/-reviewer\.log$/, ""));
+    return builds;
+  };
 
-  it("copies the first REPORT_LOG_LIMIT logs by sorted name, whatever order they are listed in, and says in the index that the rest were not copied (n-1, n, n+1)", () => {
+  it("copies the first REPORT_LOG_LIMIT build logs by sorted name, whatever order they are listed in, and says in the index that the rest were not copied (n-1, n, n+1)", () => {
     assert.equal(REPORT_LOG_LIMIT, 20);
     for (const count of [REPORT_LOG_LIMIT - 1, REPORT_LOG_LIMIT, REPORT_LOG_LIMIT + 1, REPORT_LOG_LIMIT + 30]) {
       const { fs, written } = fakeFs(filesOf(count));
-      const copied = copyTo("logs", fs, none, []);
+      const copied = copyReviewerLogs("logs", "logs/report", fs, none, [], buildsFor(count));
       const limit = Math.min(count, REPORT_LOG_LIMIT);
       assert.deepEqual(copied, Array.from({ length: limit }, (_, i) => `reviewer-${i + 1}.log`), `${count} logs`);
       for (let i = 0; i < limit; i++) assert.equal(written[`logs/report/reviewer-${i + 1}.log`], `${["Bash", "Read", "Grep"][i % 3]}(...)\n`, `${count} logs, log ${i}`);
       assert.ok(!(`logs/report/reviewer-${limit + 1}.log` in written), `${count} logs`);
-      const lines = Array.from({ length: limit }, (_, i) => `reviewer-${i + 1}.log: a build this run did not start`);
+      const lines = Array.from({ length: limit }, (_, i) => `reviewer-${i + 1}.log: issue #${100 + i}`);
       assert.equal(written["logs/report/index.txt"], `${[...lines, ...(count > REPORT_LOG_LIMIT ? [more] : [])].join("\n")}\n`, `${count} logs`);
     }
   });
 
-  it("copies the logs of builds this run started first, so files a sandbox added can't push them out", () => {
+  it("copies no log that no build of this run wrote, however many a sandbox adds, and says so once in the index", () => {
     const builds = new BuildLogs();
     builds.add(9, "zzz/9-late");
     const files = { ...filesOf(REPORT_LOG_LIMIT + 5), "zzz-9-late-reviewer.log": "Write(x)" };
     const { fs, written } = fakeFs(files);
-    copyReviewerLogs("logs", "logs/report", fs, none, [], builds);
+    const copied = copyReviewerLogs("logs", "logs/report", fs, none, [], builds);
+    assert.deepEqual(copied, ["reviewer-1.log"]);
     assert.equal(written["logs/report/reviewer-1.log"], "Write(...)\n");
-    assert.match(written["logs/report/index.txt"]!, /^reviewer-1\.log: issue #9\nreviewer-2\.log: a build this run did not start\n/);
-    assert.equal(written["logs/report/index.txt"]!.split("\n").filter((line) => line.includes("issue #9")).length, 1);
-    assert.ok(written["logs/report/index.txt"]!.endsWith(`${more}\n`));
+    assert.equal(written["logs/report/index.txt"], `reviewer-1.log: issue #9\n${others}\n`);
+    assert.deepEqual(Object.keys(written).sort(), ["logs/report/index.txt", "logs/report/reviewer-1.log"]);
+    // With none known, nothing is copied and the index only says so.
+    const none3 = fakeFs(filesOf(3));
+    assert.deepEqual(copyReviewerLogs("logs", "logs/report", none3.fs, none, [], new BuildLogs()), []);
+    assert.deepEqual(none3.written, { "logs/report/index.txt": `${others}\n` });
+  });
+
+  it("says both fixed lines, the limit first, when there are more than the limit and files no build wrote", () => {
+    const { fs, written } = fakeFs({ ...filesOf(REPORT_LOG_LIMIT + 1), "extra-reviewer.log": "Bash(1)" });
+    copyReviewerLogs("logs", "logs/report", fs, none, [], buildsFor(REPORT_LOG_LIMIT + 1));
+    assert.ok(written["logs/report/index.txt"]!.endsWith(`${more}\n${others}\n`));
   });
 
   it("gives a log that can't be read its number and its index line, and still omits the one after the limit", () => {
     const { fs, written } = fakeFs(filesOf(REPORT_LOG_LIMIT + 1), name(REPORT_LOG_LIMIT - 1));
     const warnings: string[] = [];
-    const copied = copyReviewerLogs("logs", "logs/report", fs, (line) => warnings.push(line), []);
+    const copied = copyReviewerLogs("logs", "logs/report", fs, (line) => warnings.push(line), [], buildsFor(REPORT_LOG_LIMIT + 1));
     assert.equal(copied.length, REPORT_LOG_LIMIT - 1);
     assert.ok(!copied.includes(`reviewer-${REPORT_LOG_LIMIT}.log`));
     const index = written["logs/report/index.txt"]!.split("\n");
-    assert.equal(index[REPORT_LOG_LIMIT - 1], `reviewer-${REPORT_LOG_LIMIT}.log: a build this run did not start (not copied)`);
+    assert.equal(index[REPORT_LOG_LIMIT - 1], `reviewer-${REPORT_LOG_LIMIT}.log: issue #${100 + REPORT_LOG_LIMIT - 1} (not copied)`);
     assert.equal(index[REPORT_LOG_LIMIT], more);
     assert.equal(warnings.length, 1);
   });
@@ -602,10 +649,10 @@ describe("reviewer log index", () => {
     assert.equal(REVIEWER_LOG_INDEX, "index.txt");
     copyReviewerLogs("logs", "logs/report", fs, none, [], builds);
 
-    // Sorted names: feature-7..., fix-421..., unknown...
+    // Sorted names: feature-7..., fix-421...; unknown-reviewer.log is no build's and is not copied.
     assert.equal(
       written["logs/report/index.txt"],
-      "reviewer-1.log: issue #7\nreviewer-2.log: issue #421\nreviewer-3.log: a build this run did not start\n",
+      "reviewer-1.log: issue #7\nreviewer-2.log: issue #421\nother reviewer logs in the folder were not copied: no build of this run wrote them\n",
     );
   });
 
@@ -617,13 +664,13 @@ describe("reviewer log index", () => {
 
     copyReviewerLogs("logs", "logs/report", fs, none, [], builds);
 
-    assert.equal(written["logs/report/index.txt"], `reviewer-1.log: issue #5 (not copied)\nreviewer-2.log: a build this run did not start\n`);
+    assert.equal(written["logs/report/index.txt"], `reviewer-1.log: issue #5 (not copied)\nother reviewer logs in the folder were not copied: no build of this run wrote them\n`);
     assert.ok(!JSON.stringify(written).includes(token));
   });
 
   it("writes no index when there is no reviewer log, and warns when the index can't be written", () => {
     const none2 = fakeFs({ "a-backend.log": "other" });
-    copyReviewerLogs("logs", "logs/report", none2.fs, none, []);
+    copyReviewerLogs("logs", "logs/report", none2.fs, none, [], knowing(["a-reviewer.log"]));
     assert.deepEqual(none2.written, {});
 
     const warnings: string[] = [];
@@ -635,7 +682,7 @@ describe("reviewer log index", () => {
         fs.write(path, text);
       },
     };
-    assert.deepEqual(copyReviewerLogs("logs", "logs/report", noIndex, (line) => warnings.push(line), []), ["reviewer-1.log"]);
+    assert.deepEqual(copyReviewerLogs("logs", "logs/report", noIndex, (line) => warnings.push(line), [], knowing(["a-reviewer.log"])), ["reviewer-1.log"]);
     assert.deepEqual(warnings, ["Couldn't write the index of the reviewer logs: EACCES"]);
     assert.deepEqual(Object.keys(written), ["logs/report/reviewer-1.log"]);
   });
@@ -651,7 +698,7 @@ describe("reviewer log index", () => {
           fs.write(path, text);
         },
       };
-      copyReviewerLogs("logs", "logs/report", noIndex, (line) => warnings.push(line), []);
+      copyReviewerLogs("logs", "logs/report", noIndex, (line) => warnings.push(line), [], knowing(["a-reviewer.log"]));
       assert.deepEqual(warnings, ["Couldn't write the index of the reviewer logs: an error"]);
     }
   });

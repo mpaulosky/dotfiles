@@ -9,12 +9,13 @@
 // characters, or as spaced-out hex, can't get through a check that only knows the shapes it looks for). A line holding a long run of token
 // characters is not an error line here, it is left out. A view says nothing of how often, in what order or after what a line appeared, and has one
 // `[... lines left out]` line, first, when anything else was in the log (or the log was cut). Whatever the view holds is still checked for the sandbox's
-// secret values and for token shapes, also with its spacing taken out, and a view that fails the check is replaced by a note. At most REPORT_LOG_LIMIT
-// logs are copied. What a steered reviewer can still choose is which of the fixed lines appear: about 30 host kinds, 15 tools and 26 error words, one bit
-// each, so under 80 bits a log; no text, no number, no order and no count.
+// secret values and for token shapes, also with its spacing taken out, and a view that fails the check is replaced by a note. Only the logs of builds this
+// run started are copied (a sandbox that can write the logs folder could add files of its own), at most REPORT_LOG_LIMIT of them. What a steered reviewer can
+// still choose, in the log of its own build, is which of the fixed lines appear: about 30 host kinds, 15 tools and 26 error words, one bit each, so about 72 bits
+// a log; no text, no number, no order and no count. The index says only which issue each log is, whether it was copied, and two fixed lines about logs left out.
 // The output folder is emptied before it is written, in case an earlier run left files in it.
 // A reviewer run the host gave up on may still be writing its log, so a copy is a snapshot. A log is read only as far as its last REPORT_INPUT_LIMIT
-// bytes, since the view keeps the last lines of each kind and the sandbox chooses how long a log is; a view of a longer log starts with the left-out marker.
+// bytes, since the sandbox chooses how long a log is and the host's memory grows with what it reads; a view of a longer log starts with the left-out marker.
 
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -28,8 +29,8 @@ export function reviewerLogsDir(reportDir: string): string {
   return join(reportDir, REVIEWER_LOGS_NAME);
 }
 
-// The most reviewer logs one run report copies (the ones a build of this run wrote first, then the others, each by sorted name). Their number is the
-// sandbox's choice and each view is a few dozen bits it picks, so the rest are named in the index only by one fixed line saying more were not copied (no count).
+// The most reviewer logs one run report copies (those of builds this run started, by sorted name), so the report's size doesn't depend on how many builds a
+// run had; the rest are named in the index only by one fixed line saying more were not copied (no count).
 export const REPORT_LOG_LIMIT = 20;
 
 // A run of this many token characters in an error line (base64, hex, a key) leaves the line out.
@@ -40,8 +41,8 @@ export const REPORT_TOKEN_RUN = 24;
 const LEFT_OUT = "[... lines left out]";
 
 // How much of a reviewer log the host reads: its last REPORT_INPUT_LIMIT bytes (characters, in allowlistedView), starting at a whole line. The sandbox writes
-// the log, so its size is the sandbox's choice, and the view keeps only the last lines of each kind, so reading more only costs the host memory in
-// proportion to the log (the string, then a line array and a same-length keep array) while generating its report.
+// the log, so its size is the sandbox's choice, and reading more only costs the host memory in proportion to the log (the string, then a line array)
+// while generating its report.
 export const REPORT_INPUT_LIMIT = 4 * 1024 * 1024;
 
 // `text` from its first whole line on: a text cut at its start begins in the middle of a line (or of a multi-byte character), so everything up to the
@@ -184,9 +185,9 @@ export const buildLogs = new BuildLogs();
 // are not a Sandcastle role's and are never copied (the lead's lists the subagents' answers). Never throws: it runs in the run's finally, and an unreadable file
 // or log directory is a warning (a directory that doesn't exist is no logs, and no warning).
 // `secrets` defaults to the values .sandcastle/.env gives the sandbox, read once per call. Returns the names it wrote (`reviewer-<n>.log`), including a log it wrote the note for. Beside them it writes
-// REVIEWER_LOG_INDEX, which says for each number the issue whose build wrote the log (from `builds`), or that the host started no build
-// for it, and whether the view couldn't be copied. At most REPORT_LOG_LIMIT logs are copied (those of builds this run started first, then the others, each by sorted name);
-// when there are more, the index ends with one fixed line saying so, with no count, and the returned names and the numbering cover only the copied ones. Each log is read only as far as its last REPORT_INPUT_LIMIT bytes (liveRoleLogFs.read).
+// REVIEWER_LOG_INDEX, which says for each number the issue whose build wrote the log (from `builds`) and whether the view couldn't be copied. Only the logs of builds
+// this run started are copied, at most REPORT_LOG_LIMIT of them by sorted name; the index ends with one fixed line (no count) for each of: more such logs than that,
+// and other `*-reviewer.log` files in the folder, which a sandbox could have added. The returned names and the numbering cover only the copied logs. Each log is read only as far as its last REPORT_INPUT_LIMIT bytes (liveRoleLogFs.read).
 export function copyReviewerLogs(
   logsDir: string,
   outDir: string,
@@ -210,8 +211,10 @@ export function copyReviewerLogs(
       .filter((name) => name.endsWith("-reviewer.log") && !name.endsWith("-pre-push-reviewer.log"))
       .sort();
     if (all.length === 0) return copied;
-    // The logs of builds this run started come first, so files a sandbox added to the folder can't push them out of the limit.
-    const names = [...all.filter((name) => builds.issueOf(name) !== undefined), ...all.filter((name) => builds.issueOf(name) === undefined)];
+    // Only the logs of builds this run started are copied: a sandbox that can write the logs folder could add files of its own, and each view is
+    // a few dozen bits it would choose, so copying them would multiply the channel by a number it picks.
+    const names = all.filter((name) => builds.issueOf(name) !== undefined);
+    const unknown = names.length < all.length;
     const omitted = names.length > REPORT_LOG_LIMIT;
     names.splice(REPORT_LOG_LIMIT);
     const known = secrets ?? [...sandboxSecrets().values()];
@@ -219,12 +222,11 @@ export function copyReviewerLogs(
     // A view is written under a name the host makes, never the source's: the source name is whatever an agent that can write the logs
     // folder chose, and the content checks don't see it, so a file named for the sandbox's credential would put the credential in the
     // artifact's file list. The same goes for the warnings below, which reach the runner's public log. The number is the file's place
-    // among the sorted names, and a log that can't be copied still takes its number.
+    // among the copied logs' sorted names, and a log that can't be copied still takes its number.
     const index: string[] = [];
     names.forEach((name, position) => {
       const outName = `reviewer-${position + 1}.log`;
-      const issue = builds.issueOf(name);
-      const label = issue === undefined ? "a build this run did not start" : `issue #${issue}`;
+      const label = `issue #${builds.issueOf(name)}`;
       try {
         const view = allowlistedView(fs.read(join(logsDir, name)), (line) => looksLikeSecret(line, known));
         const held = looksLikeSecret(view, known);
@@ -239,6 +241,7 @@ export function copyReviewerLogs(
       }
     });
     if (omitted) index.push(`more than ${REPORT_LOG_LIMIT} reviewer logs: the rest were not copied`);
+    if (unknown) index.push("other reviewer logs in the folder were not copied: no build of this run wrote them");
     try {
       fs.write(join(outDir, REVIEWER_LOG_INDEX), `${index.join("\n")}\n`);
     } catch (error) {

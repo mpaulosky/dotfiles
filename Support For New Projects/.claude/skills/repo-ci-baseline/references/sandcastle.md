@@ -285,19 +285,19 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   (`[error line: timed out]`), never the line's own text (a line holding a long run of token characters is no error line); one `[... lines left out]` line comes first when the log held
   anything else, and a note takes the place of a view that looks like a secret. Order, count and place carry nothing. The host reads only the last
   4 MiB of a log (`REPORT_INPUT_LIMIT`), from a whole line, so the memory it spends on one log is bounded by that and not by the log's size; the view of a
-  longer log starts with the left-out marker and lacks what came before. At most `REPORT_LOG_LIMIT` (20) logs are copied, those of builds the run started first;
-  when there are more, `index.txt` ends with one fixed line saying so (no count).
-  Beside them it writes `index.txt`: for each number, the issue whose build wrote the log, or that the run started no build for it, and whether the view could
-  not be copied. Only an issue number and fixed words go in, never a file name; a log is matched to a build by its name, which an agent that can write the logs
-  could choose, so the label is a hint and not proof of where a log came from.
+  longer log starts with the left-out marker and lacks what came before. Only the logs of builds the run started are copied, at most `REPORT_LOG_LIMIT` (20) of them by sorted name: a sandbox that
+  can write the logs folder could add files of its own, and copying them would multiply the residue below by a number it picks.
+  Beside them it writes `index.txt`: for each number, the issue whose build wrote the log and whether the view could not be copied, then one fixed line (no count) for more such logs
+  than the limit and one for other `*-reviewer.log` files in the folder. Only an issue number and fixed words go in, never a file name; the host matches a log to its build by the name
+  it gave it.
   A run with no `*-reviewer.log` to copy has no `reviewer-logs/` folder and no `index.txt` in its report, and the copy step says nothing:
   a run that starts no role (the planner alone) leaves none, with no `.sandcastle/logs` at all on Actions,
   and so does one whose logs are only a non-reviewer role's and the pre-push review's. An absent folder is normal.
   On Actions the whole report folder (`summary.md`, `handbacks.json`, `reviewer-logs/`) is `$RUNNER_TEMP/sandcastle-report/`, outside the checkout, because a head-mode sandbox mounts
   the main checkout and one the host gave up on may keep running; the workflow uploads it and the `Fail on hand-backs` step reads `handbacks.json` from it.
   This keeps free text and numbers out of the artifact. What a steered reviewer can still choose is which fixed lines appear: about 30 host kinds, 15 tools and 26 error words,
-  one bit each, under 80 bits a log, and a few more bits in `index.txt` (which build a file name matches, whether a copy failed, whether a view was held). A token of 40 characters
-  is about 240 bits, so it would take several steered reviewers' logs; that residue is accepted.
+  one bit each, so about 72 bits in the log of each build, and a few bits more in `index.txt` (whether a copy failed, whether a view was held). A token of 40 characters
+  is about 240 bits, so it would take the logs of several builds, each steered; that residue is accepted.
   A line holding a long run of token characters, or one the secret check holds, is left out whole and leaves no message.
   An artifact of a public repository is downloadable by any signed-in user and GitHub doesn't mask secrets in it.
   After a role fails (a developer, the reviewer, the scribe, the gate-fixer, or a follow-up pass's follow-up role or gate-fixer; not for a usage-limit

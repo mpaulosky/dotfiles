@@ -270,7 +270,8 @@ export function copyReviewerLogs(
 // guards against the entry being swapped after that check, but only in part: O_NOFOLLOW refuses a symlink (ELOOP), O_NONBLOCK keeps the open of a
 // FIFO from waiting for a writer (it does nothing to a regular file), O_NOCTTY keeps a terminal from becoming the host's controlling one, and fstat
 // then refuses whatever was opened unless it is a regular file. A device node swapped in between the check and the open is still opened, and refused
-// only after. The sandbox writes these logs, so it could win that race; it is accepted, since the host never reads the device and refuses it after the fstat. Windows has no O_NOFOLLOW, so there a swapped-in
+// only after. The sandbox writes these logs, so it could win that race and have the device opened (O_NONBLOCK and O_NOCTTY limit what an open does).
+// That is accepted: fstat refuses the node before any read. Windows has no O_NOFOLLOW, so there a swapped-in
 // symlink is followed. `isRegular` is a parameter so a test can stand in the swap.
 export function readLogTail(path: string, isRegular: (path: string) => boolean = (target) => lstatSync(target).isFile()): string {
   if (!isRegular(path)) throw new Error("not a regular file");

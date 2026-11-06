@@ -69,8 +69,7 @@ describe("ROLE_AGENTS", () => {
   });
 });
 
-// The Seed review-prompt.md is never overwritten, so a repo whose copy lacks the placeholder never tells its reviewer
-// what the host refuses in a PR description.
+// A review-prompt.md without the placeholder never tells its reviewer what the host refuses in a PR description.
 describe("review-prompt.md", () => {
   it("has {{PR_BODY_RULES}} where the PR description's rules go", () => {
     const prompt = readFileSync(new URL("../review-prompt.md", import.meta.url), "utf8");
@@ -78,7 +77,7 @@ describe("review-prompt.md", () => {
     assert.match(
       prompt,
       /\{\{PR_BODY_RULES\}\}/,
-      "add `{{PR_BODY_RULES}}` where the PR description's rules go; the Template's Seed review-prompt.md shows where",
+      "add `{{PR_BODY_RULES}}` where the PR description's rules go; the Template's Owned review-prompt.md shows where",
     );
   });
 });

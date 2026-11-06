@@ -25,7 +25,7 @@ export function issuePromptArgs(issue: SandcastleIssue, branch: string) {
 
 // The gate-fixer needs the issue, since at checkpoint 1 it may finish the
 // implementation, plus the red gate's output and which checkpoint it's at.
-// The Seed gate-fixer prompt knows two checkpoints. Checkpoint 3, the gate
+// The gate-fixer prompt knows two checkpoints. Checkpoint 3, the gate
 // after the host-side review's fixes, is a repair-only one like the second, so
 // the fixer is told it is at "2".
 export function gateFixerPromptArgs(issue: SandcastleIssue, branch: string, checkpoint: Checkpoint, gateOutput: string) {
@@ -33,11 +33,9 @@ export function gateFixerPromptArgs(issue: SandcastleIssue, branch: string, chec
 }
 
 // What the host refuses in the reviewer's PR description, filled in as
-// {{PR_BODY_RULES}} in review-prompt.md. It lives here, not in the Seed
-// prompt, because Apply never overwrites a Seed file: a repo gets new wording
-// on its next re-Apply only if the Template owns it (see
-// mpaulosky/dotfiles#320). Keep it in step with lib/build.mts#reviewerPrBody:
-// build.test.mts fails when a refusal there isn't named here.
+// {{PR_BODY_RULES}} in review-prompt.md. It lives here because the host fills
+// it in and it must match what lib/build.mts#reviewerPrBody refuses, which
+// build.test.mts pins: it fails when a refusal there isn't named here.
 export const PR_BODY_RULES = [
   "The host publishes `pr-body.md` word for word. When the file breaks any rule below it publishes a generic body instead, your description is lost,",
   "and you get no error. So:",
@@ -67,8 +65,8 @@ export function reviewerPromptArgs(issue: SandcastleIssue, branch: string): Prom
 // contains main, merged main cleanly, or merging main conflicted in which
 // files (and that it must finish the merge with `git commit --no-edit`).
 // `ciLog` is the failed-job log of each red check the gate doesn't cover,
-// such as CodeQL's, as CODEQL_LOG; Sandcastle refuses a placeholder
-// with no value, so a pass with none still sends a sentence saying so.
+// such as CodeQL's, as CODEQL_LOG; a placeholder with no value would leave
+// the role a blank, so a pass with none still sends a sentence saying so.
 export function followUpPromptArgs(
   issue: SandcastleIssue,
   branch: string,

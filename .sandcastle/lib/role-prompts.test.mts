@@ -335,7 +335,7 @@ describe("every prompt", () => {
   }
 });
 
-// #280: the Template's Seed prompts are dotfiles' prompts rewritten for any repo. Sandcastle (lib/prompts.mts) fills the {{NAME}}s at
+// #280: the Template's Seed files under roles/ are dotfiles' text rewritten for any repo. Sandcastle (lib/prompts.mts) fills the {{NAME}}s at
 // run time, so a rewrite that drops one leaves a value unused, or an agent without what it needs. Apply fills {{OWNER}}, {{REPO}}
 // and {{SOLUTION}} itself, so those three aren't compared. mpaulosky/dotfiles#392 made the role prompts Owned, which test.sh compares byte for
 // byte with dotfiles' copies, so only the repo's own two files are left here.
@@ -519,8 +519,7 @@ describe("the Template's Owned prompts", () => {
   });
 });
 
-// The Seed prompt is never overwritten, so the reviewer's rules for its PR description are a placeholder the Template fills in
-// (lib/prompts.mts#reviewerPromptArgs), here and in the Seed.
+// The reviewer's rules for its PR description are a placeholder the host fills in (lib/prompts.mts#reviewerPromptArgs).
 describe("review-prompt.md", () => {
   it("has {{PR_BODY_RULES}}, and still names pr-body.md and the three headings", () => {
     const prompt = read("review-prompt.md");
@@ -529,4 +528,33 @@ describe("review-prompt.md", () => {
     assert.match(prompt, /pr-body\.md/);
     for (const heading of ["## Why", "## What changed", "## Verification"]) assert.ok(prompt.includes(heading), heading);
   });
+});
+
+// mpaulosky/dotfiles#392 made the plan, review and role prompts Owned: Apply overwrites them. A comment or a failure message that still calls one a
+// Seed file Apply never overwrites sends a reader to a file that no longer exists. Sandcastle also accepts an empty prompt argument (it refuses
+// only null and undefined), so no comment may claim otherwise.
+describe("comments about the prompts", () => {
+  const stale: [RegExp, string][] = [
+    [/Seed (review-prompt|gate-fixer|plan-prompt)/, "that prompt is Owned"],
+    [/Seed prompt\b/, "the prompts are Owned"],
+    [/Apply never overwrites/, "Apply overwrites an Owned prompt"],
+    [/Seed[^.\n]*never overwritten|never overwritten[^.\n]*Seed/, "Apply overwrites an Owned prompt"],
+    [/Sandcastle refuses (an empty|a placeholder)/, "Sandcastle refuses only null and undefined"],
+    [/since Sandcastle refuses/, "Sandcastle refuses only null and undefined"],
+  ];
+  const sources = readdirSync(new URL("./", import.meta.url))
+    .filter((name) => name.endsWith(".mts") && name !== "role-prompts.test.mts")
+    .map((name) => `lib/${name}`)
+    .concat(["main.mts", "status.mts"]);
+
+  for (const source of sources) {
+    it(`${source} calls no Owned prompt a Seed file and says nothing false about empty prompt arguments`, () => {
+      const lines = read(source).split("\n");
+
+      for (const [pattern, why] of stale) {
+        const at = lines.findIndex((line) => pattern.test(line));
+        assert.equal(at, -1, `${source}:${at + 1} matches ${pattern}: ${why}`);
+      }
+    });
+  }
 });

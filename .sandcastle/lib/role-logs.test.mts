@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -13,10 +14,12 @@ import {
   REVIEWER_LOGS_NAME,
   REPORT_ERROR_LINES,
   REPORT_HOST_LINES,
+  REPORT_INPUT_LIMIT,
   REPORT_TOOL_LINES,
   REPORT_LINE_LIMIT,
   REPORT_TOKEN_RUN,
   liveRoleLogFs,
+  readLogTail,
   type RoleLogFs,
 } from "./role-logs.mts";
 
@@ -607,5 +610,158 @@ describe("reviewer log index", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
+  });
+});
+
+// A reviewer log is written by the sandbox, so its size is the sandbox's choice: the host reads at most the end of it, which is all the view keeps.
+describe("the input limit", () => {
+  const early = "Error: early failure\n";
+  const late = "Error: late failure\n";
+  const LEFT_OUT = "[... lines left out]";
+  // A log of exactly `length` characters: the early error line, one long line of filler, the late error line.
+  const logOf = (length: number) => `${early}${"a".repeat(length - early.length - late.length - 1)}\n${late}`;
+  const inTemp = (body: (dir: string) => void) => {
+    const root = mkdtempSync(join(tmpdir(), "role-logs-limit-"));
+    try {
+      body(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  };
+
+  it("keeps the whole log up to REPORT_INPUT_LIMIT characters and only its end beyond it, and says so (n-1, n, n+1)", () => {
+    assert.equal(REPORT_INPUT_LIMIT, 4 * 1024 * 1024);
+    for (const [length, cut] of [[REPORT_INPUT_LIMIT - 1, false], [REPORT_INPUT_LIMIT, false], [REPORT_INPUT_LIMIT + 1, true]] as const) {
+      const view = allowlistedView(logOf(length));
+      assert.equal(view.includes("Error: early failure"), !cut, `length ${length}`);
+      assert.ok(view.includes("Error: late failure"), `length ${length}`);
+      assert.equal(view.startsWith(`${LEFT_OUT}\n`), cut, `length ${length}`);
+    }
+  });
+
+  it("reads at most the last REPORT_INPUT_LIMIT bytes of a real log, from a whole line, marks the cut, and reads all of a log that fits (n-1, n, n+1)", () => {
+    inTemp((root) => {
+      const file = join(root, "a-reviewer.log");
+      for (const [bytes, cut] of [[REPORT_INPUT_LIMIT - 1, false], [REPORT_INPUT_LIMIT, false], [REPORT_INPUT_LIMIT + 1, true]] as const) {
+        writeFileSync(file, logOf(bytes));
+        const text = liveRoleLogFs.read(file);
+        assert.equal(text.includes("Error: early failure"), !cut, `${bytes} bytes`);
+        assert.ok(text.includes("Error: late failure"), `${bytes} bytes`);
+        assert.equal(text.startsWith(`${LEFT_OUT}\n`), cut, `${bytes} bytes`);
+        assert.ok(Buffer.byteLength(text) <= REPORT_INPUT_LIMIT + LEFT_OUT.length + 1, `${bytes} bytes`);
+      }
+      // A log of exactly the limit with no final line break comes back as written; an empty one comes back empty.
+      const noFinalBreak = `${early}${"a".repeat(REPORT_INPUT_LIMIT - early.length)}`;
+      writeFileSync(file, noFinalBreak);
+      assert.equal(liveRoleLogFs.read(file), noFinalBreak);
+      writeFileSync(file, "");
+      assert.equal(liveRoleLogFs.read(file), "");
+    });
+  });
+
+  it("shows a log it read cut as the marker and the whole of its kept tail, not cut a second time", () => {
+    inTemp((root) => {
+      const file = join(root, "a-reviewer.log");
+      writeFileSync(file, logOf(REPORT_INPUT_LIMIT + 1));
+      assert.equal(allowlistedView(liveRoleLogFs.read(file)), `${LEFT_OUT}\n${late}`);
+    });
+  });
+
+  it("keeps a first line that the cut leaves whole, and drops one that begins where the window does", () => {
+    // The window (the last REPORT_INPUT_LIMIT + 1 characters) starts on a line break: the early line after it is whole, so it stays.
+    const aligned = `x\n${early}${"a".repeat(REPORT_INPUT_LIMIT - early.length - late.length - 1)}\n${late}`;
+    assert.equal(aligned.length, REPORT_INPUT_LIMIT + 2);
+    assert.ok(allowlistedView(aligned).includes("Error: early failure"));
+    // One character further in, the early line starts exactly where the window begins: nothing shows it began a line, so it goes,
+    // which keeps the result within the limit.
+    const exact = `x\n${early}${"a".repeat(REPORT_INPUT_LIMIT - early.length - late.length)}\n${late}`;
+    assert.equal(exact.length, REPORT_INPUT_LIMIT + 3);
+    assert.ok(!allowlistedView(exact).includes("Error: early failure"));
+    inTemp((root) => {
+      const file = join(root, "a-reviewer.log");
+      writeFileSync(file, aligned);
+      assert.ok(liveRoleLogFs.read(file).includes("Error: early failure"));
+      // The marker read adds in front makes the text a little longer than the limit; the view's own cut still keeps the whole tail.
+      assert.ok(allowlistedView(liveRoleLogFs.read(file)).includes("Error: early failure"));
+      writeFileSync(file, exact);
+      assert.ok(!liveRoleLogFs.read(file).includes("Error: early failure"));
+    });
+  });
+
+  it("leaves only the marker for a tail with no line break, so a reader can tell a cut log from a quiet one", () => {
+    const oneLine = `${early}${"a".repeat(REPORT_INPUT_LIMIT + 5)}`;
+    assert.equal(allowlistedView(oneLine), `${LEFT_OUT}\n`);
+    inTemp((root) => {
+      const file = join(root, "a-reviewer.log");
+      writeFileSync(file, oneLine);
+      assert.equal(liveRoleLogFs.read(file), `${LEFT_OUT}\n`);
+      assert.equal(allowlistedView(liveRoleLogFs.read(file)), `${LEFT_OUT}\n`);
+    });
+  });
+
+  it("cuts a log with CRLF line endings at a whole line and keeps its error lines free of the carriage return", () => {
+    const crlf = `${early.replace("\n", "\r\n")}${"a".repeat(REPORT_INPUT_LIMIT)}\r\n${late.replace("\n", "\r\n")}`;
+    assert.ok(crlf.length > REPORT_INPUT_LIMIT);
+    const view = allowlistedView(crlf);
+    assert.ok(view.includes("Error: late failure\n") && !view.includes("\r"));
+    assert.ok(!view.includes("Error: early failure"));
+    inTemp((root) => {
+      const file = join(root, "a-reviewer.log");
+      writeFileSync(file, crlf);
+      assert.ok(allowlistedView(liveRoleLogFs.read(file)).includes("Error: late failure\n"));
+    });
+  });
+
+  it("never starts the tail in the middle of a multi-byte character, whichever byte of it the cut lands on", () => {
+    inTemp((root) => {
+      const file = join(root, "a-reviewer.log");
+      const head = `${"é".repeat(5)}\n`;
+      // The window starts `offset` bytes into the file: 1 is the second byte of the first é (a half character), 2 the first byte of the second (the boundary).
+      for (const offset of [1, 2]) {
+        const filler = "a".repeat(REPORT_INPUT_LIMIT + 1 + offset - Buffer.byteLength(head) - Buffer.byteLength(late) - 1);
+        writeFileSync(file, `${head}${filler}\n${late}`);
+        assert.equal(statSync(file).size, REPORT_INPUT_LIMIT + 1 + offset);
+        const text = liveRoleLogFs.read(file);
+        assert.ok(!text.includes("\uFFFD"), `offset ${offset}: a half character became U+FFFD`);
+        assert.ok(!text.includes("é"), `offset ${offset}: the cut line was kept`);
+        assert.ok(text.includes("Error: late failure"));
+      }
+    });
+  });
+
+  it("refuses a log that is not a regular file before opening it: a symlink, a directory and a FIFO", () => {
+    inTemp((root) => {
+      writeFileSync(join(root, "target"), "x");
+      symlinkSync(join(root, "target"), join(root, "link-reviewer.log"));
+      assert.throws(() => liveRoleLogFs.read(join(root, "link-reviewer.log")), /not a regular file/);
+      mkdirSync(join(root, "dir-reviewer.log"));
+      assert.throws(() => liveRoleLogFs.read(join(root, "dir-reviewer.log")), /not a regular file/);
+      // The check comes first, so a FIFO is refused without an open (an open without O_NONBLOCK would wait here).
+      if (spawnSync("mkfifo", [join(root, "fifo-reviewer.log")]).status === 0) assert.throws(() => liveRoleLogFs.read(join(root, "fifo-reviewer.log")), /not a regular file/);
+      assert.deepEqual(readLogTail(join(root, "target")), "x");
+    });
+  });
+
+  it("still refuses what the open finds when the entry was swapped after the check (the check stood in by one that passes): a symlink, a directory", () => {
+    inTemp((root) => {
+      writeFileSync(join(root, "target"), "x");
+      symlinkSync(join(root, "target"), join(root, "link-reviewer.log"));
+      assert.throws(() => readLogTail(join(root, "link-reviewer.log"), () => true), { code: "ELOOP" });
+      mkdirSync(join(root, "dir-reviewer.log"));
+      assert.throws(() => readLogTail(join(root, "dir-reviewer.log"), () => true), /not a regular file/);
+    });
+  });
+
+  it("does not wait for a writer on a FIFO swapped in after the check (run in a child process, since a wait would block this one)", (t) => {
+    // The child imports a .mts file, which only Node's own type stripping (unflagged from 22.18 and 23.6) lets a bare `node -e` do.
+    if (!process.features.typescript) return t.skip("needs Node's type stripping");
+    inTemp((root) => {
+      const fifo = join(root, "fifo-reviewer.log");
+      if (spawnSync("mkfifo", [fifo]).status !== 0) return t.skip("mkfifo is not available");
+      const module = new URL("./role-logs.mts", import.meta.url).href;
+      const script = `import(${JSON.stringify(module)}).then((m) => { try { m.readLogTail(${JSON.stringify(fifo)}, () => true); process.exit(4); } catch (e) { process.exit(e.message === "not a regular file" ? 0 : 3); } });`;
+      const run = spawnSync(process.execPath, ["-e", script], { timeout: 15_000, encoding: "utf8" });
+      assert.equal(run.status, 0, `exit ${run.status}, signal ${run.signal}: ${run.stderr}`);
+    });
   });
 });

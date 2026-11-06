@@ -859,7 +859,7 @@ describe("checkReview", () => {
   });
 
   it("reviews a re-Apply that changes an Owned file that carries behaviour (the coverage gate, the hand-off rules, an issue template, the reviewer agent, a judging prompt, the local gate's check.sh, global.json, the pre-push-review skill's files, docs/PROCESS.md, the gate chain), though all are Owned: they carry behaviour a path alone can't vouch for", () => {
-    for (const path of [".github/ci/coverage-threshold", ".claude/rules/sandcastle-hand-off.md", ".github/ISSUE_TEMPLATE/bug_report.md", ".github/ISSUE_TEMPLATE/config.yml", ".github/ISSUE_TEMPLATE/feature_request.md", ".claude/agents/pre-push-reviewer.md", ".sandcastle/critique-prompt.md", ".sandcastle/intake-prompt.md", ".sandcastle/check.sh", "global.json", ".claude/skills/pre-push-review/SKILL.md", ".claude/skills/pre-push-review/lenses.md", ".claude/skills/pre-push-review/review-bar.md", "docs/PROCESS.md", "scripts/gate.sh", "scripts/review.sh", ".github/hooks/pre-push", ".sandcastle/lib/review-ledger.mts", ".sandcastle/lib/host-safety.mts", ".sandcastle/lib/sandbox-env.mts", ".sandcastle/lib/host-review.mts", ".sandcastle/lib/host-review-prompts.mts", ".sandcastle/lib/build.mts"]) {
+    for (const path of [".github/ci/coverage-threshold", ".claude/rules/sandcastle-hand-off.md", ".github/ISSUE_TEMPLATE/bug_report.md", ".github/ISSUE_TEMPLATE/config.yml", ".github/ISSUE_TEMPLATE/feature_request.md", ".claude/agents/pre-push-reviewer.md", ".sandcastle/critique-prompt.md", ".sandcastle/intake-prompt.md", ".sandcastle/check.sh", "global.json", ".claude/skills/pre-push-review/SKILL.md", ".claude/skills/pre-push-review/lenses.md", ".claude/skills/pre-push-review/review-bar.md", "docs/PROCESS.md", "scripts/gate.sh", "scripts/review.sh", ".github/hooks/pre-push", ".sandcastle/lib/review-ledger.mts", ".sandcastle/lib/host-safety.mts", ".sandcastle/lib/sandbox-env.mts", ".sandcastle/lib/host-review.mts", ".sandcastle/lib/host-review-prompts.mts", ".sandcastle/lib/build.mts", ".sandcastle/main.mts", ".sandcastle/status.mts"]) {
       run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
       mkdirSync(join(repo, dirname(path)), { recursive: true });
       commit(repo, ".editorconfig", "{}\n", "re-Apply");
@@ -868,6 +868,19 @@ describe("checkReview", () => {
       // In dotfiles scripts/gate.sh is its own, not Owned, so checkReview refuses it there whatever REVIEWED_ON_REAPPLY says; owned-paths.test.mts pins its entry.
       assert.equal(underOwnedPattern(path), true, `${path} is still under an Owned pattern`);
       assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false, path);
+    }
+  });
+
+  it("reviews a re-Apply that changes only .sandcastle/main.mts or only .sandcastle/status.mts (mpaulosky/dotfiles#462)", () => {
+    for (const path of [".sandcastle/main.mts", ".sandcastle/status.mts"]) {
+      run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
+      mkdirSync(join(repo, ".sandcastle"), { recursive: true });
+      commit(repo, path, "0\n", "re-Apply");
+
+      const result = checkReview(repo, mergeBase(repo), {});
+
+      assert.equal(result.ok, false, path);
+      assert.match(result.message, new RegExp(path.replace(/\./g, "\\.")), `${path} is named among the files withheld`);
     }
   });
 

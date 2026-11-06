@@ -13,6 +13,11 @@ import { copyReviewerLogs, liveRoleLogFs } from "./role-logs.mts";
 // dotfiles-only value fails here and not in an older repo's migration. This file is dotfiles', not the Template's.
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
+
+// Same claim check as owned-paths.test.mts (a copy: that file runs its tests when imported).
+const MAIN_STATUS_EXEMPT_SPAN = 200;
+const claimsMainOrStatusExempt = (text: string) =>
+  new RegExp(`(main|status)\\.mts[\\s\\S]{0,${MAIN_STATUS_EXEMPT_SPAN}}?((stay|remain)s?|(are|is)([\\s/]+still)?)[\\s/]+exempt`, "i").test(text);
 const skill = join(root, TEMPLATE_OWNED_DIR.replace("/template/owned", ""));
 const owned = join(skill, "template/owned");
 const seed = join(skill, "template/seed");
@@ -715,5 +720,24 @@ describe("the docs of the Owned role prompts (mpaulosky/dotfiles#392)", () => {
     for (const file of ["scripts/gate.sh", "scripts/review.sh", ".github/hooks/pre-push", "review-ledger.mts", "docs/PROCESS.md"]) assert.ok(text.includes(file), `${file} is named among the files a re-Apply reviews`);
     assert.match(text, /owned-paths\.test\.mts/);
     assert.match(text, /exempt only by a decision/);
+  });
+
+  it("catches, in the doc pin, a claim that main.mts or status.mts stay exempt across a dot, a wrap or a capital", () => {
+    assert.equal(claimsMainOrStatusExempt("`.sandcastle/main.mts` stays exempt"), true);
+    assert.equal(claimsMainOrStatusExempt("status.mts (see lib/x.mts). They remain exempt"), true);
+    assert.equal(claimsMainOrStatusExempt("main.mts and status.mts stay\n  exempt"), true);
+    assert.equal(claimsMainOrStatusExempt("Status.mts Stays Exempt"), true);
+    assert.equal(claimsMainOrStatusExempt(`main.mts${"x".repeat(MAIN_STATUS_EXEMPT_SPAN)}stay exempt`), true, "a claim at the span");
+    assert.equal(claimsMainOrStatusExempt(`main.mts${"x".repeat(MAIN_STATUS_EXEMPT_SPAN + 1)}stay exempt`), false, "a claim one past the span");
+    assert.equal(claimsMainOrStatusExempt("main.mts and status.mts need a review. The rest stay exempt"), true, "within the span, the nearest claim counts");
+  });
+
+  it("says in references/pre-push-review.md that a re-Apply reviews main.mts and status.mts, and that a person starts the hardening reviewers (mpaulosky/dotfiles#462)", () => {
+    const text = readFileSync(join(skill, "references/pre-push-review.md"), "utf8");
+
+    assert.equal(claimsMainOrStatusExempt(text), false, "the doc says main.mts or status.mts stay exempt");
+    assert.doesNotMatch(text, /they stay exempt for now/);
+    assert.match(text, /REVIEWED_ON_REAPPLY[\s\S]*?`(\.sandcastle\/)?main\.mts`[\s\S]*?`(\.sandcastle\/)?status\.mts`[\s\S]*?needs a review like any other change/);
+    assert.match(text, /hardening-review[\s\S]*?a person (starts|launches)/);
   });
 });

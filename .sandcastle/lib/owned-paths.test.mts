@@ -27,6 +27,12 @@ const filesUnder = (folder: string): string[] =>
     // Test runs leave these behind in the working tree; git ignores them.
     .filter((entry) => !/(^|\/)(__pycache__|\.pytest_cache|node_modules)(\/|$)/.test(entry));
 
+// The widest gap between naming main.mts or status.mts and saying they stay exempt that still counts as one claim: a comment wraps lines, and a file name holds a dot.
+const MAIN_STATUS_EXEMPT_SPAN = 200;
+// Case-blind, and `[\s/]+` lets the phrase wrap onto a `//` comment line; "are exempt" and "is still exempt" count as the claim too.
+const claimsMainOrStatusExempt = (text: string) =>
+  new RegExp(`(main|status)\\.mts[\\s\\S]{0,${MAIN_STATUS_EXEMPT_SPAN}}?((stay|remain)s?|(are|is)([\\s/]+still)?)[\\s/]+exempt`, "i").test(text);
+
 describe("OWNED_PATHS against the Template's template/owned/", () => {
   it("covers every file the Template's Owned folder holds", () => {
     const uncovered = filesUnder(owned).filter((file) => !underOwnedPattern(file));
@@ -62,12 +68,10 @@ describe("OWNED_PATHS against the Template's template/owned/", () => {
 // instead. checkReview exempts a path by its name, so a new single-file pattern in OWNED_PATHS is
 // exempt by default: it fails the test below until someone puts it in one list or the other.
 // Why they stay exempt: text or tooling config no Sandcastle role reads as a prompt (a wrong one only misleads a person or fails a lint the Template
-// runs). The exception is .sandcastle/main.mts and status.mts, the host's entrypoint and status command: host-side code that wires the reviewed modules
-// (buildIssue, protectHostGit, githubTokensIn) together. They stay exempt for now, and the owner may decide to review them (left open in the review).
+// runs). .sandcastle/main.mts and status.mts, the host's entrypoint and status command, are host-side code that wires the reviewed modules
+// (buildIssue, protectHostGit, githubTokensIn) together: they are in GATE_CHAIN below, not here (mpaulosky/dotfiles#462).
 const EXEMPT_ON_REAPPLY_AUDITED: readonly string[] = [
   ".github/pull_request_template.md",
-  ".sandcastle/main.mts",
-  ".sandcastle/status.mts",
   ".sandcastle/status.test.mts",
   ".sandcastle/tsconfig.json",
   ".sandcastle/.env.example",
@@ -136,6 +140,8 @@ const GATE_CHAIN = [
   ".sandcastle/lib/host-review.mts",
   ".sandcastle/lib/host-review-prompts.mts",
   ".sandcastle/lib/build.mts",
+  ".sandcastle/main.mts",
+  ".sandcastle/status.mts",
 ];
 
 describe("the files a re-Apply may write without a review", () => {
@@ -172,6 +178,47 @@ describe("the files a re-Apply may write without a review", () => {
     assert.ok(read.length >= 3, "build.mts no longer reads the skill's files the way this test looks for");
     for (const file of read) assert.equal(REVIEWED_ON_REAPPLY.has(file), true, `${file} is read into a reviewer's prompt, so a re-Apply that rewrites it needs a review`);
     assert.equal(underOwnedPattern(".claude/skills/pre-push-review/new-file.md"), false, "a new file in the skill's folder is not Owned, so it is never exempt unseen");
+  });
+
+  it("reviews .sandcastle/main.mts and status.mts on a re-Apply and no longer audits them as exempt (mpaulosky/dotfiles#462)", () => {
+    for (const file of [".sandcastle/main.mts", ".sandcastle/status.mts"]) {
+      assert.equal(REVIEWED_ON_REAPPLY.has(file), true, file);
+      assert.equal(EXEMPT_ON_REAPPLY_AUDITED.includes(file), false, `${file} is still audited as exempt`);
+      assert.ok(GATE_CHAIN.includes(file), `${file} is not in GATE_CHAIN`);
+    }
+  });
+
+  it("catches the claim that main.mts or status.mts stay exempt, across the dot in a file name and a line break", () => {
+    const withGap = (gap: number) => `main.mts${"x".repeat(gap)}stay exempt`;
+
+    assert.equal(claimsMainOrStatusExempt("the entrypoint, main.mts and status.mts,\n// stay exempt for now"), true);
+    assert.equal(claimsMainOrStatusExempt("status.mts remains exempt"), true);
+    assert.equal(claimsMainOrStatusExempt(withGap(MAIN_STATUS_EXEMPT_SPAN - 1)), true, "a claim one short of the span");
+    assert.equal(claimsMainOrStatusExempt(withGap(MAIN_STATUS_EXEMPT_SPAN)), true, "a claim at the span");
+    assert.equal(claimsMainOrStatusExempt(withGap(MAIN_STATUS_EXEMPT_SPAN + 1)), false, "a claim one past the span");
+    assert.equal(claimsMainOrStatusExempt("main.mts and status.mts go in REVIEWED_ON_REAPPLY"), false);
+  });
+
+  it("catches the claim when the phrase wraps, is capitalised, or says they are exempt, and when a dot sits between the file name and the claim", () => {
+    assert.equal(claimsMainOrStatusExempt("main.mts and status.mts stay\n// exempt for now"), true, "a wrap inside the phrase");
+    assert.equal(claimsMainOrStatusExempt("main.mts and status.mts stay\r\n// exempt"), true, "a CRLF wrap inside the phrase");
+    assert.equal(claimsMainOrStatusExempt("Both are host code. Main.mts and Status.mts Stay Exempt."), true, "capitals");
+    assert.equal(claimsMainOrStatusExempt("status.mts and main.mts are exempt"), true, "are exempt");
+    assert.equal(claimsMainOrStatusExempt("`main.mts` is still exempt"), true, "is still exempt");
+    assert.equal(claimsMainOrStatusExempt("`.sandcastle/main.mts` (see lib/x.mts). They stay exempt."), true, "a dot between the name and the claim");
+    assert.equal(claimsMainOrStatusExempt("main.mts and status.mts are not exempt"), false, "not exempt");
+  });
+
+  it("says in lib/review-ledger.mts that main.mts and status.mts are reviewed, and that a person starts the hardening reviewers (mpaulosky/dotfiles#462)", () => {
+    const source = readFileSync(join(root, ".sandcastle/lib/review-ledger.mts"), "utf8");
+    const comment = source.slice(0, source.indexOf("export const REVIEWED_ON_REAPPLY"));
+
+    assert.equal(claimsMainOrStatusExempt(comment), false, "the comment says main.mts or status.mts stay exempt");
+    assert.match(comment, /main\.mts/, "the comment doesn't name main.mts among the reviewed files");
+    assert.match(comment, /status\.mts/, "the comment doesn't name status.mts among the reviewed files");
+    // The sentence itself, across its line break: "a person" alone appears elsewhere in the comment.
+    assert.match(comment, /a person starts the reviewers\s+\/\/ that read it and reads their output/, "the comment doesn't give the person-starts-the-reviewers reason");
+    assert.doesNotMatch(comment, /text no Sandcastle role reads/);
   });
 
   it("lists no file in both, no audited file that isn't a single-file Owned pattern, and no reviewed file outside every Owned pattern", () => {
@@ -246,7 +293,7 @@ const EXEMPT_GLOBS_AUDITED: Readonly<Record<string, GlobEntry>> = {
       ".claude/skills/hardening-review/references/triage.md",
       ".claude/skills/hardening-review/scripts/known_open.py",
       ".claude/skills/hardening-review/scripts/mutate.py",
-    ], why: "text a person's session reads when they run the hardening review, and its two .py scripts, which pytest covers; no Sandcastle role reads them" },
+    ], why: "text and two .py scripts (which pytest covers); brief.md is a prompt, but a person starts those reviewers and reads their output, so a wrong edit only affects a review the person runs" },
   ".sandcastle/lib/*.mts": {
     files: [
       "agents.mts", "agents.test.mts", "branches.mts", "branches.test.mts", "build.test.mts", "building.mts", "building.test.mts", "checkpoint.mts",
@@ -361,6 +408,15 @@ describe("the globs that exempt a whole folder from the re-Apply review (mpaulos
       assert.ok(patternFor(glob)(file), `${file} is under ${glob}`);
       assert.deepEqual(unclassifiedUnderGlobs([...present, file], EXEMPT_GLOBS_AUDITED, REVIEWED_ON_REAPPLY), [`${file} (under ${glob})`]);
     }
+  });
+
+  it("gives the hardening-review glob the reason that a person starts those reviewers and reads their output (mpaulosky/dotfiles#462)", () => {
+    const { why } = EXEMPT_GLOBS_AUDITED[".claude/skills/hardening-review/**"]!;
+
+    assert.match(why, /person (starts|launches)/i);
+    assert.match(why, /brief\.md/);
+    assert.match(why, /reads/i);
+    assert.match(why, /review (a|the) person runs/i);
   });
 
   it("accepts a file REVIEWED_ON_REAPPLY names even when it sits under an exempt glob", () => {

@@ -265,7 +265,7 @@ const EXEMPT_GLOBS_AUDITED: Readonly<Record<string, GlobEntry>> = {
       ".claude/skills/hardening-review/references/triage.md",
       ".claude/skills/hardening-review/scripts/known_open.py",
       ".claude/skills/hardening-review/scripts/mutate.py",
-    ], why: "text a person's session reads when they run the hardening review, and its two .py scripts, which pytest covers; no Sandcastle role reads them" },
+    ], why: "text and two .py scripts (which pytest covers); brief.md is a prompt, but a person starts those reviewers and reads their output, so a wrong edit only affects a review the person runs" },
   ".sandcastle/lib/*.mts": {
     files: [
       "agents.mts", "agents.test.mts", "branches.mts", "branches.test.mts", "build.test.mts", "building.mts", "building.test.mts", "checkpoint.mts",

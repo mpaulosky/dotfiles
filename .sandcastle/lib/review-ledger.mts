@@ -68,8 +68,9 @@ export const REAPPLY_BRANCH = "chore/reapply-baseline";
 // file neither runs nor feeds the review and the gate (the workflows, the
 // other hooks, scripts and .sandcastle/lib/ modules, and their tests:
 // actionlint, zizmor, shellcheck, pytest, tsc and the rest; the
-// hardening-review skill's .py scripts are covered by pytest), or it is text no Sandcastle role reads
-// (the hardening-review skill's text, which a person's own session reads), or
+// hardening-review skill's .py scripts are covered by pytest), or a person starts the reviewers
+// that read it and reads their output (the hardening-review skill's text, brief.md included, so a wrong edit
+// can only affect a review a person runs), or
 // it steers only Copilot's review and commit messages and widens no tool and
 // runs no code (the .github/instructions/ files, so a wrong instruction can only
 // shape advice). A file no Template check can judge, or that a Sandcastle role
@@ -79,8 +80,10 @@ export const REAPPLY_BRANCH = "chore/reapply-baseline";
 // tells a role to follow), or that is part of the chain that runs the review and
 // the gate (scripts/gate.sh, scripts/review.sh, .github/hooks/pre-push, and the
 // lib/ modules review-ledger, host-safety, sandbox-env, host-review,
-// host-review-prompts and build: the Template's checks run in the Template, so
-// in a repo they judge whatever bytes the re-Apply wrote), goes in REVIEWED_ON_REAPPLY. In dotfiles,
+// host-review-prompts and build, and the host's entrypoint and status command,
+// main.mts and status.mts, which wire those modules together: the Template's
+// checks run in the Template, so in a repo they judge whatever bytes the
+// re-Apply wrote), goes in REVIEWED_ON_REAPPLY. In dotfiles,
 // lib/owned-paths.test.mts enforces it: a single-file pattern must be
 // classified there, and a file under a glob must be listed in that glob's
 // entry, so a new Owned file is never exempt unseen.
@@ -191,6 +194,8 @@ export const REVIEWED_ON_REAPPLY: ReadonlySet<string> = new Set([
   ".sandcastle/lib/host-review.mts",
   ".sandcastle/lib/host-review-prompts.mts",
   ".sandcastle/lib/build.mts",
+  ".sandcastle/main.mts",
+  ".sandcastle/status.mts",
 ]);
 
 // The files under an Owned pattern that the Template doesn't supply: its Seed

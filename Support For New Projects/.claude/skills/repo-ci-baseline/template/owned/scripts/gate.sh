@@ -42,7 +42,7 @@ mapfile -t SHELL_FILES < <(grep -E '\.sh$|^scripts/[^/.]+$|^\.github/hooks/((pre
 
 # An installed markdownlint-cli2 (as the pre-commit hook uses) when there is
 # one; otherwise this pinned version, never whatever the registry serves at push time.
-MARKDOWNLINT_CLI2_VERSION="0.23.3"
+MARKDOWNLINT_CLI2_VERSION="0.24.0"
 # The same for the workflow and shell linters. The fallbacks run through uvx or
 # docker, so an installed tool only needs to be on PATH to be preferred. Keep
 # these in step with .github/workflows/lint-actions.yml.

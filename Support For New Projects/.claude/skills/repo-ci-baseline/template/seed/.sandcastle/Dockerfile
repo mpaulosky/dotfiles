@@ -107,7 +107,7 @@ RUN mkdir -p /home/agent/.claude/skills
 # pins, installed globally with pnpm (never npm) into the agent's home.
 ENV PNPM_HOME="/home/agent/.local/share/pnpm"
 ENV PATH="/home/agent/.local/bin:${PNPM_HOME}/bin:$PATH"
-ARG MARKDOWNLINT_CLI2_VERSION=0.23.3
+ARG MARKDOWNLINT_CLI2_VERSION=0.24.0
 RUN cd /tmp && pnpm add -g "markdownlint-cli2@${MARKDOWNLINT_CLI2_VERSION}" && command -v markdownlint-cli2
 
 WORKDIR /home/agent

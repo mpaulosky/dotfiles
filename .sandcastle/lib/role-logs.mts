@@ -267,12 +267,14 @@ export function copyReviewerLogs(
 
 // A reviewer log's last REPORT_INPUT_LIMIT bytes, from a whole line, behind LEFT_OUT when the log was longer. `isRegular` is the check before the open: it
 // refuses a symlink, device, FIFO, socket or directory without opening it (a device can have side effects when opened), on every platform. The open
-// guards against the entry being swapped after that check: O_NOFOLLOW refuses a symlink (ELOOP; Windows has no such flag, and the check is its only
-// refusal) and O_NONBLOCK keeps the open of a FIFO from waiting for a writer (it does nothing to a regular file); fstat then refuses what was opened
-// unless it is a regular file. `isRegular` is a parameter so a test can stand in the swap.
+// guards against the entry being swapped after that check, but only in part: O_NOFOLLOW refuses a symlink (ELOOP), O_NONBLOCK keeps the open of a
+// FIFO from waiting for a writer (it does nothing to a regular file), O_NOCTTY keeps a terminal from becoming the host's controlling one, and fstat
+// then refuses whatever was opened unless it is a regular file. A device node swapped in between the check and the open is still opened, and refused
+// only after: that window needs write access to the logs folder and a won race, and is accepted. Windows has no O_NOFOLLOW, so there a swapped-in
+// symlink is followed. `isRegular` is a parameter so a test can stand in the swap.
 export function readLogTail(path: string, isRegular: (path: string) => boolean = (target) => lstatSync(target).isFile()): string {
   if (!isRegular(path)) throw new Error("not a regular file");
-  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0) | (constants.O_NOCTTY ?? 0));
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile()) throw new Error("not a regular file");

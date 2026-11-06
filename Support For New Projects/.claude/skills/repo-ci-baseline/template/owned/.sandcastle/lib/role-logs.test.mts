@@ -736,6 +736,8 @@ describe("the input limit", () => {
       assert.throws(() => liveRoleLogFs.read(join(root, "link-reviewer.log")), /not a regular file/);
       mkdirSync(join(root, "dir-reviewer.log"));
       assert.throws(() => liveRoleLogFs.read(join(root, "dir-reviewer.log")), /not a regular file/);
+      // The check comes first, so a FIFO is refused without an open (an open without O_NONBLOCK would wait here).
+      if (spawnSync("mkfifo", [join(root, "fifo-reviewer.log")]).status === 0) assert.throws(() => liveRoleLogFs.read(join(root, "fifo-reviewer.log")), /not a regular file/);
       assert.deepEqual(readLogTail(join(root, "target")), "x");
     });
   });
@@ -751,6 +753,8 @@ describe("the input limit", () => {
   });
 
   it("does not wait for a writer on a FIFO swapped in after the check (run in a child process, since a wait would block this one)", (t) => {
+    // The child imports a .mts file, which only Node's own type stripping (unflagged from 22.18 and 23.6) lets a bare `node -e` do.
+    if (!process.features.typescript) return t.skip("needs Node's type stripping");
     inTemp((root) => {
       const fifo = join(root, "fifo-reviewer.log");
       if (spawnSync("mkfifo", [fifo]).status !== 0) return t.skip("mkfifo is not available");

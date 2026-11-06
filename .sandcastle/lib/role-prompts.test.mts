@@ -386,6 +386,18 @@ describe("the Template's Seed prompts", () => {
     assert.match(rules, /\.claude\/rules\//);
     assert.match(rules, /UI developer/);
   });
+
+  it("tells the tester where tests go in the Seed shared rules, since tester.md leaves that to the rules", () => {
+    const rules = readFileSync(new URL("roles/shared-rules.md", seedSandcastle), "utf8");
+
+    assert.match(rules, /Where tests go: in the test project under `tests\/` for the project under `src\/`, and as `<module>\.test\.mts` beside a Sandcastle module/);
+  });
+
+  it("lists the Owned prompts in the Seed coding standards, so a repo doesn't edit one a re-Apply overwrites", () => {
+    const standards = readFileSync(new URL("CODING_STANDARDS.md", seedSandcastle), "utf8").replace(/\s+/g, " ");
+
+    assert.match(standards, /`plan-prompt\.md`, `review-prompt\.md` and every role prompt under `roles\/` but `shared-rules\.md` and `skills\.md` are owned/);
+  });
 });
 
 // mpaulosky/dotfiles#392: the nine prompts that instruct the pipeline's roles are the Template's Owned files, read in every repo, so they hold

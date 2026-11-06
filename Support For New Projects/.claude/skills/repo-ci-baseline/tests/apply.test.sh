@@ -19,7 +19,7 @@ check() { if eval "$2"; then ok; else bad "$1"; fi; }
 
 # A skill copy whose Template has one Owned and two Seed files, plus a cache
 # a local pytest run could leave behind, and a Sandcastle section (an Owned
-# tsconfig.json, a Seed role prompt and a Seed package.json).
+# tsconfig.json, a Seed file under .sandcastle/roles/ and a Seed package.json).
 skill="$work/skill"
 mkdir -p "$skill/template/owned/.github/workflows" "$skill/template/owned/.github/scripts/__pycache__" \
   "$skill/template/seed/docs" "$skill/template/seed/.github/ci" \
@@ -171,7 +171,7 @@ new_repo "$repo"
 touch "$repo/Widget.slnx"
 out="$("$apply" "$repo")"
 check "sandcastle, empty repo: Owned file written" '[[ -f "$repo/.sandcastle/tsconfig.json" ]]'
-check "sandcastle, empty repo: Seed role prompt written" '[[ -f "$repo/.sandcastle/roles/architect.md" ]]'
+check "sandcastle, empty repo: Seed file under roles/ written" '[[ -f "$repo/.sandcastle/roles/architect.md" ]]'
 check "sandcastle, empty repo: Seed package.json written" '[[ -f "$repo/package.json" ]]'
 check "sandcastle, empty repo: {{REPO}} filled and {{TASK_ID}} kept" \
   'grep -qx "# Widget architect for issue {{TASK_ID}}" "$repo/.sandcastle/roles/architect.md"'

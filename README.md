@@ -185,10 +185,10 @@ In `roles/shared-rules.md`:
 - Use the repo's build and test commands (`dotnet build <Solution>.slnx`, the test projects) instead of `npm`.
 - Point the agents at `CONTEXT.md`, `docs/adr/` and the coding standards, and have them work test-first.
 - Use the repo's commit format, `<type>(<scope>): <Summary>` with `Refs #<id>`.
-- Install the skills the agents need on the host in `~/.claude/skills`; the sandbox mounts them read-only. Name each one in `SANDBOX_SKILLS` in `lib/repo-config.mts` and list them in
-  `roles/skills.md` under the same names:
-  the skills consistency check fails when the two lists differ. Point agents at a repo-local skill (one under the repo's `.claude/skills/` that isn't in `SANDBOX_SKILLS`) from
-  `roles/shared-rules.md`, not from `roles/skills.md`.
+
+Skills are set up apart from the shared rules. Install the skills the agents need on the host in `~/.claude/skills`; the sandbox mounts them read-only. Name each one in `SANDBOX_SKILLS` in
+`lib/repo-config.mts` and list them in `roles/skills.md` under the same names: the skills consistency check fails when the two lists differ. Point agents at a repo-local skill (one under the
+repo's `.claude/skills/` that isn't in `SANDBOX_SKILLS`) from `roles/shared-rules.md`, not from `roles/skills.md`.
 
 ### 7. Adapt the orchestration
 

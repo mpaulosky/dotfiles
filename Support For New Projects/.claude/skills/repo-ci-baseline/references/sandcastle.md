@@ -85,7 +85,7 @@ and with nothing when it didn't; it fills in `backend.md`'s `{{UI_DEVELOPER}}` t
 `lib/agents.mts#uiEnabled` is false, and the planner's `ui` pick and the fallback "every optional role" both leave it out.
 With it, the role runs after the developer.
 `review-prompt.md` holds `{{PR_BODY_RULES}}`, which `lib/prompts.mts` fills in with what the host refuses in the reviewer's PR description;
-`lib/config.test.mts` fails without it, so an existing repo adds it where it wrote those rules by hand.
+`lib/config.test.mts` fails when a repo's copy lacks it. `review-prompt.md` is Owned and carries it, so a re-Apply restores it; a repo's own PR-description rules go in `roles/shared-rules.md`.
 
 **Skills.** `SANDBOX_SKILLS` in `lib/repo-config.mts` names the host skills the sandbox mounts read-only from `~/.claude/skills` (a name the host lacks is logged and skipped).
 It is empty in the Seed: a skills block that lists a skill a host may lack can't be in the Seed, and not every repo is .NET. A .NET repo opts in by listing the skills there:

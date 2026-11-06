@@ -135,7 +135,7 @@ step "markdownlint"
 command cp -f "$owned/.markdownlint-cli2.jsonc" "$md_tmp/template.markdownlint-cli2.jsonc"
 (cd "$skill_dir" && markdownlint-cli2 --config "$md_tmp/template.markdownlint-cli2.jsonc" \
   '*.md' 'references/*.md' 'docs/**/*.md' 'template/**/*.md' 'template/**/.*/**/*.md' '!template/seed/.sandcastle/**') || fail "markdownlint"
-# The Seed Sandcastle prompts, as an Applied repo lints them: beside the Owned
+# The Seed Sandcastle Markdown, as an Applied repo lints it: beside the Owned
 # .sandcastle/.markdownlint-cli2.jsonc, which markdownlint-cli2 merges with --config.
 mkdir -p "$md_tmp/seed-sandcastle/.sandcastle"
 (cd "$seed/.sandcastle" && find . -name '*.md' -exec cp --parents {} "$md_tmp/seed-sandcastle/.sandcastle/" \;)

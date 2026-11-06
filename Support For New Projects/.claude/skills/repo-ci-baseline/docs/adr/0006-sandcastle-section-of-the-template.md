@@ -1,4 +1,4 @@
-# Sandcastle's shared files are Owned, its prompts are Seed, and Apply adds them only to a Sandcastle repo
+# Sandcastle's shared files and prompts are Owned, its repo text is Seed, and Apply adds them only to a Sandcastle repo
 
 **Status:** accepted (mpaulosky/dotfiles#280); implemented in `template/owned/.sandcastle/`, `template/seed/.sandcastle/`, `apply.sh` and `test.sh`
 ([sandcastle.md](../../references/sandcastle.md)). Its decision to keep the rest of `lib/` and `main.mts` out is superseded by
@@ -43,8 +43,9 @@ The Template now carries one, split by the same rule as the rest of it (ADR 0001
 
 ## Considered Options
 
-- **Owning the whole pipeline** (every `lib/` module, `main.mts` and the prompts): rejected for now; `config.mts` and the role prompts hold per-repo
-  values, and the three full-pipeline repos' copies couldn't be compared from one repo.
+- **Owning the whole pipeline** (every `lib/` module, `main.mts` and the prompts): rejected for now; `config.mts` holds per-repo
+  values, and the three full-pipeline repos' copies couldn't be compared from one repo. Partly superseded by mpaulosky/dotfiles#392, which made the
+  prompts Owned, with a repo's text in `roles/shared-rules.md` and `roles/skills.md`.
 - **Keeping the role prompts Seed**: rejected; they drifted 9-35 lines per repo, and a repo's few lines of its own fit in `roles/shared-rules.md` and `roles/skills.md`.
 - **Owned `shared-rules.md`, as the issue planned**: rejected; it would overwrite each repo's description of itself on every Apply.
 - **A separate `template/sandcastle/` tree with an `apply.sh --sandcastle` flag**: rejected; one more tree and a flag to forget,

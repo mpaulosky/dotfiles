@@ -558,3 +558,54 @@ describe("comments about the prompts", () => {
     });
   }
 });
+
+// mpaulosky/dotfiles#392: the prose that describes the prompts says they are Owned. Each of these once described the Seed prompts.
+describe("the docs about the Owned prompts", () => {
+  const skill = new URL("../../Support For New Projects/.claude/skills/repo-ci-baseline/", import.meta.url);
+  const doc = (path: string) => readFileSync(new URL(path, skill), "utf8").replace(/\s+/g, " ");
+
+  it("ADR 0006's title no longer calls the prompts Seed, and its owning-the-pipeline option says #392 superseded it in part", () => {
+    const adr = doc("docs/adr/0006-sandcastle-section-of-the-template.md");
+
+    assert.doesNotMatch(adr.slice(0, adr.indexOf(" **Status:**")), /prompts are Seed/);
+    assert.match(adr, /^# Sandcastle's shared files and prompts are Owned/);
+    const option = adr.slice(adr.indexOf("**Owning the whole pipeline**"), adr.indexOf("**Keeping the role prompts Seed**"));
+    assert.match(option, /mpaulosky\/dotfiles#392/);
+    assert.doesNotMatch(option, /role prompts hold per-repo values/);
+  });
+
+  it("SKILL.md says a re-Apply asks for a review when it writes a Sandcastle prompt, not only a judging role's", () => {
+    const text = doc("SKILL.md");
+
+    assert.doesNotMatch(text, /a judging-role prompt/);
+    assert.match(text, /a Sandcastle prompt \(intake, critique, plan, review or a role's\)/);
+  });
+
+  it("references/sandcastle.md says where a sandbox gate's instructions go and why SANDBOX_SKILLS is empty", () => {
+    const text = doc("references/sandcastle.md");
+
+    assert.doesNotMatch(text, /a Seed prompt can't promise a skill/);
+    assert.match(text, /a skills block that lists a skill a host may lack can't be in the Seed/);
+    assert.doesNotMatch(text, /points the gate-fixer and follow-up roles' instructions at it/);
+    assert.match(text, /points the gate-fixer and follow-up roles at it in `roles\/shared-rules\.md`/);
+    const beforeApply = text.slice(text.indexOf("**Before Apply**"), text.indexOf("Diff the repo's `Dockerfile`"));
+    assert.match(beforeApply, /instructions for a sandbox gate \(step 8\)/);
+  });
+
+  it("README.md step 7 doesn't send a reader back to editing the Owned prompts", () => {
+    const text = readFileSync(new URL("../../README.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+
+    assert.doesNotMatch(text, /Adapt those two as in step 6/);
+    assert.match(text, /`critique-prompt\.md` and the role prompts are Owned and used as they are/);
+    assert.doesNotMatch(text, /Tell the implementer not to push/);
+    assert.doesNotMatch(text, /Have the planner skip issues whose branch already has an open pull request/);
+  });
+
+  it("the Seed repo-config.mts tells a repo to list a mounted skill in roles/skills.md, not in the prompts", () => {
+    const text = doc("template/seed/.sandcastle/lib/repo-config.mts").replace(/ \/\/ /g, " ");
+    const comment = text.slice(text.indexOf("The host skills the role prompts"), text.indexOf("export const SANDBOX_SKILLS"));
+
+    assert.doesNotMatch(comment, /`# SKILLS` section of the tester/);
+    assert.match(comment, /`roles\/skills\.md`, which the host passes to the tester, backend and ui prompts as \{\{REPO_SKILLS\}\}/);
+  });
+});

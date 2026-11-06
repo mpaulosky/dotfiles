@@ -88,7 +88,7 @@ With it, the role runs after the developer.
 `lib/config.test.mts` fails without it, so an existing repo adds it where it wrote those rules by hand.
 
 **Skills.** `SANDBOX_SKILLS` in `lib/repo-config.mts` names the host skills the sandbox mounts read-only from `~/.claude/skills` (a name the host lacks is logged and skipped).
-It is empty in the Seed: a Seed prompt can't promise a skill a host may lack, and not every repo is .NET. A .NET repo opts in by listing the skills there:
+It is empty in the Seed: a skills block that lists a skill a host may lack can't be in the Seed, and not every repo is .NET. A .NET repo opts in by listing the skills there:
 
 ```ts
 export const SANDBOX_SKILLS: readonly string[] = [
@@ -332,7 +332,8 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
 2. Rename the `test:sandcastle` script to `check:sandcastle`, run it with `tsx`, and add `tsc --noEmit`, and add `sandcastle:status` (`tsx .sandcastle/status.mts`).
    A Seed `package.json` is written once, so a repo that already has one adds the script by hand.
 3. **Before Apply**, move what the repo's role prompts, `plan-prompt.md` and `review-prompt.md` say about the repo: Apply overwrites them with the Owned ones.
-   Its pointers (`docs/CODING_STANDARDS.md`, `CONTEXT.md`, `.claude/rules/`), its repo-specific bullets and its UI notes go into `roles/shared-rules.md`, and its `# SKILLS` block into `roles/skills.md`.
+   Its pointers (`docs/CODING_STANDARDS.md`, `CONTEXT.md`, `.claude/rules/`), its repo-specific bullets, its UI notes and its instructions for a sandbox gate (step 8)
+   go into `roles/shared-rules.md`, and its `# SKILLS` block into `roles/skills.md`.
    Diff the repo's `Dockerfile` and `package.json` against the Template's Seed files, and bring over what the repo lacks.
 4. Run `pnpm install`, then commit `pnpm-lock.yaml` with the change.
 5. Add `GATE_LIMIT_MINUTES` to `lib/repo-config.mts` (the Seed's is 10): the Owned `lib/step-limit.mts` imports it, so a repo without it fails to load.
@@ -344,7 +345,8 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
 6. Keep the older repos' `claude-opus-4-8` pin by setting it in `lib/repo-config.mts`'s `ROLE_AGENTS`; moving off it is that repo's follow-up.
 7. Take the Template's `sandcastle.yml` and drop the repo's own from `NOT_OWNED_BASELINE_PATHS`; move the skills it installs into `.github/ci/sandcastle-skills.txt` ([The workflow](#the-workflow)).
 8. The sandbox has no Docker daemon. A repo whose test projects start containers sets `GATE_COMMAND` in `lib/repo-config.mts` to a script that leaves
-   those out and keeps the lints, and points the gate-fixer and follow-up roles' instructions at it. Name it `.sandcastle/sandbox-gate.sh`, not `.sandcastle/check.sh`, which is Owned:
+   those out and keeps the lints, and points the gate-fixer and follow-up roles at it in `roles/shared-rules.md` (the role prompts are Owned, so Apply would overwrite
+   the instruction there). Name it `.sandcastle/sandbox-gate.sh`, not `.sandcastle/check.sh`, which is Owned:
    IssueManager, IssueTracker and TicketManager rename theirs, in a PR that merges before the Apply that brings in the Owned one.
 9. Set `GATE_SCRIPT` in `lib/repo-config.mts` to the committed file `GATE_COMMAND` runs (`.sandcastle/sandbox-gate.sh`, the script of step 8), and list in `CHECK_PATHS` every place
    the gate reads its checks from: its scripts and tests, `.github/workflows/`, `.github/scripts/check_gh_repo.py`, `.claude/skills/` (the gate's `gh` check reads them)

@@ -442,8 +442,11 @@ describe("the pre-push review lead role", () => {
 describe("LEAD_DENIED_TOOLS", () => {
   // A deny list can't name a tool a later release adds, so this is a second layer behind the definition's tools, not a guarantee.
   it("also denies the known shell, write, network and spawn tools, so a lead that starts without its definition's tools is still held back from them", () => {
-    const known = ["Bash", "BashOutput", "KillShell", "Monitor", "PowerShell", "Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Skill", "EnterWorktree", "Task"];
+    const known = ["Bash", "BashOutput", "KillShell", "Monitor", "PowerShell", "Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Skill", "EnterWorktree"];
     for (const tool of known) assert.ok(LEAD_DENIED_TOOLS.includes(tool), `${tool} isn't denied`);
+    // `Task` is the old name of the Agent tool and may alias it in deny rules, and a bare `Agent` is the tool itself: denying either could leave the lead unable to start a lens.
+    // The Agent(...) allowlist already controls what it spawns.
+    for (const tool of ["Task", "Agent"]) assert.ok(!LEAD_DENIED_TOOLS.includes(tool), `${tool} would deny the lead its Agent tool`);
   });
 
   it("holds the ledger deny list and denies every built-in subagent type, so the lead starts only the lens-<id> agents defined for it", () => {

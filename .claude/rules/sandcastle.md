@@ -83,7 +83,8 @@ guardrails keep agent-written code from running on the host. A change keeps ever
   get Read, Grep and Glob only (`restrictedClaudeCode`), and no agent's prompt names a shell on the ledger, a token or `.git/review`.
   In the `subagents` reviewer mode (`SANDCASTLE_REVIEWERS`) the `pre-push-review-lead` run holds Read, Grep and Glob and an `Agent(lens-1,lens-2,…)` allowlist of the round's lens agents.
   `leadTools` builds the list and it is written as the `tools` of the lead's own `--agents` definition, `pre-push-review-lead`, started with `--agent` and no `--tools`
-  (in `--tools` the allowlist would leave the lead no `Agent` tool). `restrictedClaudeCode` enforces it: it refuses a bare `Agent` and any tool beyond Read, Grep and Glob.
+  (in `--tools` the allowlist would leave the lead no `Agent` tool). `restrictedClaudeCode` enforces it: it refuses a bare `Agent`, any tool beyond Read, Grep and Glob,
+  and a lead whose `denied` lacks any of `LEAD_DENIED_TOOLS` or that lacks `strictMcp` or `userSettingsOnly`.
   The name `pre-push-review-lead` is reserved, and `LEAD_DENIED_TOOLS` denies every known built-in subagent type and the known shell, write, network and spawn tools
   as further layers (a deny list can't name a later release's tool).
   It starts the reviewers as subagents defined on its command line, which hold Read, Grep and Glob only; the lead holds Agent, Read, Grep and Glob and nothing else:

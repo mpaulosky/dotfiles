@@ -82,10 +82,11 @@ export const MAX_AGENTS_WORD_BYTES = 60_000;
 const BUILTIN_SUBAGENT_TYPES = ["general-purpose", "Explore", "Plan", "statusline-setup", "claude-code-guide", "output-style-setup"] as const;
 
 // What the lead of a review's subagents is denied: the ledger rules, and every known built-in subagent type (the allowlist in leadTools is the first layer).
-// The lead's own definition holds none of the shell, write, network and spawn tools, but `--tools` no longer narrows the session, so the ones known today are denied too, as a second
-// layer behind the definition's tools: a deny list can't name a tool a later release adds, so it is not a guarantee should `--agent` not apply the definition's tools.
+// The lead's own definition holds none of the tools that run commands, write files, reach the network, load skills or enter worktrees, but `--tools` no longer narrows the session, so the
+// ones known today are denied too, as a second layer behind the definition's tools: a deny list can't name a tool a later release adds, so it is not a guarantee should `--agent` not
+// apply the definition's tools. `Task` (the old name of Agent) and a bare `Agent` are left out on purpose: a deny rule may alias them to the lead's own Agent tool, and the allowlist covers spawning.
 const LEAD_NEVER_TOOLS = [
-  "Bash", "BashOutput", "KillShell", "Monitor", "PowerShell", "Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Skill", "EnterWorktree", "Task",
+  "Bash", "BashOutput", "KillShell", "Monitor", "PowerShell", "Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Skill", "EnterWorktree",
 ] as const;
 export const LEAD_DENIED_TOOLS: readonly string[] = [...LEDGER_DENIED_TOOLS, ...BUILTIN_SUBAGENT_TYPES.map((type) => `Agent(${type})`), ...LEAD_NEVER_TOOLS];
 

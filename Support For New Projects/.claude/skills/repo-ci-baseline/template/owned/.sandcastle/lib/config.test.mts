@@ -549,7 +549,8 @@ function visibleMarkdown(markdown: string): string {
 
       const comment = /^ {0,3}<!--/.exec(line);
       if (comment) {
-        const end = line.indexOf("-->", comment[0].length);
+        // The close may overlap the opener, as in "<!-->", a complete comment of its own.
+        const end = line.indexOf("-->", comment[0].length - 2);
         if (end === -1) {
           inComment = true;
           rest = "";

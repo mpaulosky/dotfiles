@@ -12,11 +12,8 @@ import {
   reviewerLogFileName,
   reviewerLogsDir,
   REVIEWER_LOGS_NAME,
-  REPORT_ERROR_LINES,
-  REPORT_HOST_LINES,
   REPORT_LOG_LIMIT,
   REPORT_INPUT_LIMIT,
-  REPORT_TOOL_LINES,
   REPORT_TOKEN_RUN,
   liveRoleLogFs,
   readLogTail,
@@ -75,17 +72,28 @@ describe("allowlistedView", () => {
   it("keeps every host status line with its numbers masked, and the start line without its timestamp", () => {
     const kept = hostLines.map((line) => (line.startsWith("--- Run started") ? "--- Run started ---" : line.replace(/\d+/g, "#")));
     assert.ok(kept.some((line) => line.includes("#")) && kept.every((line) => !/\d/.test(line)));
-    assert.equal(allowlistedView(hostLines.join("\n")), `${kept.join("\n")}\n`);
+    assert.equal(allowlistedView(hostLines.join("\n")), `${[...new Set(kept)].sort().join("\n")}\n`);
   });
 
-  it("keeps only the last REPORT_HOST_LINES host lines", () => {
-    assert.equal(REPORT_HOST_LINES, 30);
-    // Two kinds in turn, so no line repeats the one before it (a repeat is shown once).
-    const kind = (i: number) => (i % 2 === 0 ? "Agent started" : "Agent stopped");
-    const lines = (count: number) => Array.from({ length: count }, (_, i) => kind(i));
-    assert.equal(allowlistedView(lines(REPORT_HOST_LINES).join("\n")), `${lines(REPORT_HOST_LINES).join("\n")}\n`);
-    const over = allowlistedView(lines(REPORT_HOST_LINES + 1).join("\n"));
-    assert.equal(over, `[... lines left out]\n${lines(REPORT_HOST_LINES + 1).slice(1).join("\n")}\n`);
+  it("is a set, not a sequence: order, count and gaps change nothing, so they carry nothing", () => {
+    const a = allowlistedView("Agent started\nBash(1)\nfatal x\nAgent stopped\nRead(2)\npanic y");
+    assert.equal(a, "Agent started\nAgent stopped\nBash(...)\nRead(...)\n[error line: fatal]\n[error line: panic]\n");
+    // Reordered, repeated, interleaved with blank lines, with CRLF: the same view.
+    assert.equal(allowlistedView("panic y\r\nRead(2)\r\n\r\nAgent stopped\nfatal x\nBash(9)\nAgent started\nAgent started\nBash(1)\nBash(1)\npanic y"), a);
+    // A thousand lines of each kind are still one line of each.
+    const many = Array.from({ length: 1000 }, (_, i) => ["Agent started", `Bash(${i})`, `fatal ${i}`, "Agent stopped"][i % 4]!).join("\n");
+    assert.equal(allowlistedView(many), "Agent started\nAgent stopped\nBash(...)\n[error line: fatal]\n");
+    // A line between kept lines of the same kind does not show where it sat: only that something was left out.
+    assert.equal(allowlistedView("Agent started\nprose\nAgent stopped"), "[... lines left out]\nAgent started\nAgent stopped\n");
+    assert.equal(allowlistedView("Agent started\n\n\nAgent stopped\n"), "Agent started\nAgent stopped\n");
+  });
+
+  it("shows at most one line for each fixed host line, tool and error word", () => {
+    const hostKinds = new Set(hostLines.map((line) => line.replace(/\d+/g, "#")));
+    assert.ok(allowlistedView(hostLines.concat(hostLines).join("\n")).split("\n").length <= hostKinds.size + 1);
+    const tools = ["Bash", "Read", "Grep", "Glob", "Edit", "MultiEdit", "Write", "NotebookEdit", "Task", "Agent", "TodoWrite", "WebFetch", "WebSearch", "Skill"];
+    const view = allowlistedView([...tools, ...tools, "mcp__a__b(x)", "mcp__c__d(y)"].map((name) => (name.includes("(") ? name : `${name}(x)`)).join("\n"));
+    assert.equal(view.split("\n").filter(Boolean).length, tools.length + 1);
   });
 
   it("limits every number in a host line to three digits (two after a decimal point), and needs one", () => {
@@ -120,18 +128,8 @@ describe("allowlistedView", () => {
 
   it("keeps a known tool's name and drops its arguments, also over several lines", () => {
     const view = allowlistedView('Bash(cat > f <<\'EOF\'\nthe hidden body\nEOF\n)\nRead(/etc/passwd)');
-    assert.match(view, /^Bash\(\.\.\.\)\n/);
-    assert.ok(view.includes("Read(...)"));
+    assert.equal(view, "[... lines left out]\nBash(...)\nRead(...)\n");
     assert.ok(!/hidden|passwd|cat > f/.test(view));
-  });
-
-  it("keeps only the last REPORT_TOOL_LINES tool lines", () => {
-    assert.equal(REPORT_TOOL_LINES, 30);
-    const lines = (count: number) => Array.from({ length: count }, (_, i) => `${i % 2 === 0 ? "Bash" : "Read"}(${i})`);
-    const kept = (count: number) => lines(count).map((line) => `${line.split("(")[0]}(...)`);
-    assert.equal(allowlistedView(lines(REPORT_TOOL_LINES).join("\n")), `${kept(REPORT_TOOL_LINES).join("\n")}\n`);
-    const over = allowlistedView(lines(REPORT_TOOL_LINES + 1).join("\n"));
-    assert.equal(over, `[... lines left out]\n${kept(REPORT_TOOL_LINES + 1).slice(1).join("\n")}\n`);
   });
 
   it("keeps each tool a role is given by name", () => {
@@ -166,9 +164,9 @@ describe("allowlistedView", () => {
     for (const line of lookalikes) assert.equal(allowlistedView(line), "[... lines left out]\n", line);
   });
 
-  it("drops model prose and marks where lines were left out, once per run of them and without a count, blank lines being no run", () => {
+  it("drops model prose and marks that lines were left out, once, first and without a count, blank lines being none", () => {
     const view = allowlistedView("Agent started\nsome prose\nmore prose\n\nAgent stopped\nlast words");
-    assert.equal(view, "Agent started\n[... lines left out]\nAgent stopped\n[... lines left out]\n");
+    assert.equal(view, "[... lines left out]\nAgent started\nAgent stopped\n");
   });
 
   it("matches a host line whole: a prefix, a suffix, a malformed number or timestamp doesn't pass", () => {
@@ -188,18 +186,10 @@ describe("allowlistedView", () => {
   it("masks the numbers of a host line, so a forged line carries no digits out", () => {
     // 40 forged lines whose digits spell a token would, unmasked, carry it out; masked they are the same line.
     const forged = Array.from({ length: 40 }, (_, i) => `Iteration ${100 + i}/${200 + i}`);
-    assert.equal(allowlistedView(forged.join("\n")), "[... lines left out]\nIteration #/#\n");
+    assert.equal(allowlistedView(forged.join("\n")), "Iteration #/#\n");
     assert.equal(allowlistedView("Iteration 1/3\nIteration 2/3"), allowlistedView("Iteration 9/9\nIteration 8/8"));
     assert.equal(allowlistedView("Context window: 42k"), "Context window: #k\n");
     assert.equal(allowlistedView("Setting up sandbox done (1.5s)"), "Setting up sandbox done (#.#s)\n");
-  });
-
-  it("shows a kept line once when it repeats the one before it, and again after a gap or another line", () => {
-    assert.equal(allowlistedView("Agent started\nAgent started\nAgent started"), "Agent started\n");
-    assert.equal(allowlistedView("Agent started\nprose\nAgent started"), "Agent started\n[... lines left out]\nAgent started\n");
-    assert.equal(allowlistedView("Agent started\nAgent stopped\nAgent started"), "Agent started\nAgent stopped\nAgent started\n");
-    assert.equal(allowlistedView("Bash(a)\nBash(b)\nRead(c)"), "Bash(...)\nRead(...)\n");
-    assert.equal(allowlistedView("error 1\nerror 2"), "[error line: error]\n");
   });
 
   it("keeps a fixed message for each word that names an error, and only as a word", () => {
@@ -216,7 +206,7 @@ describe("allowlistedView", () => {
 
   it("keeps an error line as a message, not the prose around it, and the host lines and tool names near it", () => {
     const view = allowlistedView("prose a\nBash(secret)\nthe claude-code process aborted\nAgent stopped\nprose b\n");
-    assert.equal(view, "[... lines left out]\nBash(...)\n[error line: aborted]\nAgent stopped\n[... lines left out]\n");
+    assert.equal(view, "[... lines left out]\nAgent stopped\nBash(...)\n[error line: aborted]\n");
   });
 
   it("publishes no text of an error line, however long, with any characters", () => {
@@ -272,18 +262,6 @@ describe("allowlistedView", () => {
     const secret = `error ${"x ".repeat(98)}hunter2`;
     assert.equal(allowlistedView(secret, (line) => line.includes("hunter2")), "[... lines left out]\n");
     assert.equal(allowlistedView(secret), "[error line: error]\n");
-  });
-
-  it("keeps only the last REPORT_ERROR_LINES error lines", () => {
-    assert.equal(REPORT_ERROR_LINES, 20);
-    // Two words in turn, so no message repeats the one before it (a repeat is shown once); the first line is the only `abort`.
-    const word = (i: number) => (i === 0 ? "abort" : i % 2 === 1 ? "fatal" : "panic");
-    const lines = (count: number) => Array.from({ length: count }, (_, i) => `${word(i)} number ${i}`);
-    const messages = (count: number) => Array.from({ length: count }, (_, i) => `[error line: ${word(i)}]`);
-    assert.equal(allowlistedView(lines(REPORT_ERROR_LINES).join("\n")), `${messages(REPORT_ERROR_LINES).join("\n")}\n`);
-    const over = allowlistedView(lines(REPORT_ERROR_LINES + 1).join("\n"));
-    assert.equal(over, `[... lines left out]\n${messages(REPORT_ERROR_LINES + 1).slice(1).join("\n")}\n`);
-    assert.ok(!over.includes("abort"));
   });
 
   it("keeps a first-line-only error log, and reads CRLF lines", () => {
@@ -551,26 +529,53 @@ describe("copyReviewerLogs", () => {
   });
 });
 
-// The numbered views carry no name, so the host says which build each one is (mpaulosky/dotfiles#428).
+// At most REPORT_LOG_LIMIT logs are copied: the sandbox chooses how many there are.
 describe("the log limit", () => {
-  it("copies at most REPORT_LOG_LIMIT logs, by sorted name, and says in the index that the rest were not copied (n-1, n, n+1)", () => {
+  const name = (i: number) => `log-${String(i).padStart(3, "0")}-reviewer.log`;
+  // Listed in reverse, each with a view of its own (a tool name that depends on its position), so which logs were copied and in what order shows.
+  const filesOf = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, i) => count - 1 - i).map((i) => [name(i), `${["Bash", "Read", "Grep"][i % 3]}(${i})`]));
+  const more = `more than ${REPORT_LOG_LIMIT} reviewer logs: the rest were not copied`;
+
+  it("copies the first REPORT_LOG_LIMIT logs by sorted name, whatever order they are listed in, and says in the index that the rest were not copied (n-1, n, n+1)", () => {
     assert.equal(REPORT_LOG_LIMIT, 20);
-    const name = (i: number) => `log-${String(i).padStart(3, "0")}-reviewer.log`;
-    for (const [count, omitted] of [[REPORT_LOG_LIMIT - 1, false], [REPORT_LOG_LIMIT, false], [REPORT_LOG_LIMIT + 1, true], [REPORT_LOG_LIMIT + 30, true]] as const) {
-      const files = Object.fromEntries(Array.from({ length: count }, (_, i) => [name(i), "aborted"]));
-      const { fs, written } = fakeFs(files);
+    for (const count of [REPORT_LOG_LIMIT - 1, REPORT_LOG_LIMIT, REPORT_LOG_LIMIT + 1, REPORT_LOG_LIMIT + 30]) {
+      const { fs, written } = fakeFs(filesOf(count));
       const copied = copyTo("logs", fs, none, []);
       const limit = Math.min(count, REPORT_LOG_LIMIT);
-      assert.equal(copied.length, limit, `${count} logs`);
-      assert.deepEqual(copied, Array.from({ length: limit }, (_, i) => `reviewer-${i + 1}.log`));
+      assert.deepEqual(copied, Array.from({ length: limit }, (_, i) => `reviewer-${i + 1}.log`), `${count} logs`);
+      for (let i = 0; i < limit; i++) assert.equal(written[`logs/report/reviewer-${i + 1}.log`], `${["Bash", "Read", "Grep"][i % 3]}(...)\n`, `${count} logs, log ${i}`);
       assert.ok(!(`logs/report/reviewer-${limit + 1}.log` in written), `${count} logs`);
-      const index = written["logs/report/index.txt"]!;
-      assert.equal(index.includes(`more than ${REPORT_LOG_LIMIT} reviewer logs: the rest were not copied`), omitted, `${count} logs`);
-      assert.equal(index.split("\n").length, limit + (omitted ? 2 : 1), `${count} logs`);
+      const lines = Array.from({ length: limit }, (_, i) => `reviewer-${i + 1}.log: a build this run did not start`);
+      assert.equal(written["logs/report/index.txt"], `${[...lines, ...(count > REPORT_LOG_LIMIT ? [more] : [])].join("\n")}\n`, `${count} logs`);
     }
+  });
+
+  it("copies the logs of builds this run started first, so files a sandbox added can't push them out", () => {
+    const builds = new BuildLogs();
+    builds.add(9, "zzz/9-late");
+    const files = { ...filesOf(REPORT_LOG_LIMIT + 5), "zzz-9-late-reviewer.log": "Write(x)" };
+    const { fs, written } = fakeFs(files);
+    copyReviewerLogs("logs", "logs/report", fs, none, [], builds);
+    assert.equal(written["logs/report/reviewer-1.log"], "Write(...)\n");
+    assert.match(written["logs/report/index.txt"]!, /^reviewer-1\.log: issue #9\nreviewer-2\.log: a build this run did not start\n/);
+    assert.equal(written["logs/report/index.txt"]!.split("\n").filter((line) => line.includes("issue #9")).length, 1);
+    assert.ok(written["logs/report/index.txt"]!.endsWith(`${more}\n`));
+  });
+
+  it("gives a log that can't be read its number and its index line, and still omits the one after the limit", () => {
+    const { fs, written } = fakeFs(filesOf(REPORT_LOG_LIMIT + 1), name(REPORT_LOG_LIMIT - 1));
+    const warnings: string[] = [];
+    const copied = copyReviewerLogs("logs", "logs/report", fs, (line) => warnings.push(line), []);
+    assert.equal(copied.length, REPORT_LOG_LIMIT - 1);
+    assert.ok(!copied.includes(`reviewer-${REPORT_LOG_LIMIT}.log`));
+    const index = written["logs/report/index.txt"]!.split("\n");
+    assert.equal(index[REPORT_LOG_LIMIT - 1], `reviewer-${REPORT_LOG_LIMIT}.log: a build this run did not start (not copied)`);
+    assert.equal(index[REPORT_LOG_LIMIT], more);
+    assert.equal(warnings.length, 1);
   });
 });
 
+// The numbered views carry no name, so the host says which build each one is (mpaulosky/dotfiles#428).
 describe("reviewer log index", () => {
   it("names a log the way Sandcastle does: the branch with the characters a file name can't hold as hyphens", () => {
     assert.equal(reviewerLogFileName("feature/214-say-in-pr-auto-merges"), "feature-214-say-in-pr-auto-merges-reviewer.log");
@@ -670,8 +675,8 @@ describe("the input limit", () => {
   const early = "Fatal: early failure\n";
   const late = "Panic: late failure\n";
   const LEFT_OUT = "[... lines left out]";
-  // A log of exactly `length` characters: the early error line, one long line of filler, the late error line.
-  const logOf = (length: number) => `${early}${"a".repeat(length - early.length - late.length - 1)}\n${late}`;
+  // A log of exactly `length` characters: the early error line, one long line of blanks (which is no line left out), the late error line.
+  const logOf = (length: number) => `${early}${" ".repeat(length - early.length - late.length - 1)}\n${late}`;
   const inTemp = (body: (dir: string) => void) => {
     const root = mkdtempSync(join(tmpdir(), "role-logs-limit-"));
     try {

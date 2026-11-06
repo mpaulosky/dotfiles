@@ -2,17 +2,16 @@
 // 641-byte report and no log, so nothing named why. The artifact of a public repository can be
 // downloaded by any signed-in user and GitHub masks secrets in step logs, not artifacts, and a log
 // holds what an agent printed: model prose and command text anyone who can write an issue can steer.
-// So a log is never copied whole. Only an allowlisted view is: the host's own status lines (the last few, every number in them
-// masked as `#` and the start line without its timestamp, since a forged line's digits are data), the name
-// of each of the last few tool calls without its arguments (only a known tool's name, an MCP tool as `mcp__(...)`), and the few lines that name an
-// error or an abort. Those are kept as a fixed message that names the error word the line matched
-// (`[error line: timed out]`), never as the line itself, so no word of a log's free text reaches the view: a secret an error line printed
-// with invisible fillers between its characters, or as spaced-out hex, can't get through a check that only knows the shapes it looks for.
-// The number of them is limited, and a line holding a long run of token characters is left out. Whatever the view holds is
-// still checked for the sandbox's secret values and for token shapes, also with its spacing taken out, and a
-// view that fails the check is replaced by a note. A kept line that repeats the one before it is shown once, and at most
-// REPORT_LOG_LIMIT logs are copied. No text and no number gets through; what a steered reviewer can still choose is which of the fixed
-// lines appear, in what order, and where the left-out markers fall: a few bits a line, in at most about a hundred lines a log.
+// So a log is never copied whole. Only an allowlisted view is, and it is three sorted sets of fixed lines, not a sequence: which of the host's own status
+// lines appeared (every number in them masked as `#`, the start line without its timestamp, since a forged line's digits are data), which known tools
+// were called (a known tool's name without its arguments, an MCP tool as `mcp__(...)`), and which error words appeared (as the fixed message
+// `[error line: timed out]`, never the line itself, so no word of a log's free text reaches the view: a secret printed with invisible fillers between its
+// characters, or as spaced-out hex, can't get through a check that only knows the shapes it looks for). A line holding a long run of token
+// characters is not an error line here, it is left out. A view says nothing of how often, in what order or after what a line appeared, and has one
+// `[... lines left out]` line, first, when anything else was in the log (or the log was cut). Whatever the view holds is still checked for the sandbox's
+// secret values and for token shapes, also with its spacing taken out, and a view that fails the check is replaced by a note. At most REPORT_LOG_LIMIT
+// logs are copied. What a steered reviewer can still choose is which of the fixed lines appear: about 30 host kinds, 15 tools and 26 error words, one bit
+// each, so under 80 bits a log; no text, no number, no order and no count.
 // The output folder is emptied before it is written, in case an earlier run left files in it.
 // A reviewer run the host gave up on may still be writing its log, so a copy is a snapshot. A log is read only as far as its last REPORT_INPUT_LIMIT
 // bytes, since the view keeps the last lines of each kind and the sandbox chooses how long a log is; a view of a longer log starts with the left-out marker.
@@ -29,25 +28,15 @@ export function reviewerLogsDir(reportDir: string): string {
   return join(reportDir, REVIEWER_LOGS_NAME);
 }
 
-// The most error lines one view keeps (the last ones, where an abort shows), as fixed messages.
-export const REPORT_ERROR_LINES = 20;
-
-// The most host status lines one view keeps (the last ones); a real run prints a few per iteration. A kept line has its numbers masked (see
-// maskedHostLine), so a forged one carries no data beyond which line it is.
-export const REPORT_HOST_LINES = 30;
-
-// The most tool-call lines one view keeps (the last ones): which tool a line names is data a forged line can choose.
-export const REPORT_TOOL_LINES = 30;
-
-// The most reviewer logs one run report copies (the first by sorted name). Their number is the sandbox's choice, and each view and each index line
-// is data a log's writer picks, so the rest are named in the index only as a count of logs not copied.
+// The most reviewer logs one run report copies (the ones a build of this run wrote first, then the others, each by sorted name). Their number is the
+// sandbox's choice and each view is a few dozen bits it picks, so the rest are named in the index only by one fixed line saying more were not copied (no count).
 export const REPORT_LOG_LIMIT = 20;
 
 // A run of this many token characters in an error line (base64, hex, a key) leaves the line out.
 export const REPORT_TOKEN_RUN = 24;
 
-// The marker the view puts in place of a run of lines it left out, and in front of a log it cut to its last REPORT_INPUT_LIMIT bytes, so a reader
-// can tell a cut log from a quiet one. No count: the number of lines an attacker printed would be data.
+// The marker the view starts with when it left lines out, or the log was cut to its last REPORT_INPUT_LIMIT bytes, so a reader can tell a log with more in it
+// from a quiet one. No count and no place: the number of lines an attacker printed, and where, would be data.
 const LEFT_OUT = "[... lines left out]";
 
 // How much of a reviewer log the host reads: its last REPORT_INPUT_LIMIT bytes (characters, in allowlistedView), starting at a whole line. The sandbox writes
@@ -85,7 +74,7 @@ const hostLine = new RegExp(
   ].join("|")})$`,
 );
 
-// A host status line with every number replaced by : the numbers are free digits a forged line could use to carry a secret out, and the
+// A host status line with every number replaced by `#`: the numbers are free digits a forged line could use to carry a secret out, and the
 // view says which kind of line ran, not how many.
 function maskedHostLine(line: string): string {
   return line.replace(/\d+/g, "#");
@@ -108,7 +97,7 @@ function toolName(line: string): string | undefined {
   return /^mcp__[A-Za-z0-9-]{1,30}__[A-Za-z0-9_-]{1,40}$/.test(name) ? "mcp__(...)" : undefined;
 }
 
-// A line that says a run went wrong, which the view keeps as a fixed message (the last REPORT_ERROR_LINES of them) whoever wrote it.
+// A line that says a run went wrong, whose word the view keeps as a fixed message, whoever wrote the line.
 // It must keep no `g` or `y` flag (`test` and `exec` would then depend on lastIndex) and no `u` flag (a Unicode case-insensitive match
 // lets U+017F or U+212A stand for `s` or `k`, and the message would copy them).
 const errorLine = /\b(?:abort(?:ed)?|error|errors|fail(?:ed|ure|ures)?|exception|fatal|panic|timed out|timeout|killed|terminated|exit(?:ed)? (?:code|with)|signal|crash(?:ed)?|unauthori[sz]ed|rate limit|overloaded)\b/i;
@@ -125,52 +114,31 @@ function errorMessage(line: string): string {
   return `[error line: ${errorLine.exec(line)![0].toLowerCase()}]`;
 }
 
-// The allowlisted view of a reviewer log, of its last REPORT_INPUT_LIMIT characters from a whole line (behind LEFT_OUT when it was longer):
-// its last REPORT_HOST_LINES host status lines and the names of its last REPORT_TOOL_LINES known tool calls, with a
-// `[... lines left out]` marker (no count) for each run of lines it left out. Of the lines that name an error, the last REPORT_ERROR_LINES
-// are kept as fixed `[error line: <word>]` messages, unless one holds a run of REPORT_TOKEN_RUN token characters or
-// `held` says it looks like a secret. Model prose, tool arguments and tool output are what it leaves out.
+// The allowlisted view of a reviewer log, of its last REPORT_INPUT_LIMIT characters from a whole line: the host status lines that appeared (numbers masked), the
+// known tools called (names only) and the fixed `[error line: <word>]` messages for the error words that appeared, each set sorted and each line once.
+// A line that holds a run of REPORT_TOKEN_RUN token characters, or that `held` says looks like a secret, is no error line. Model prose, tool arguments and tool
+// output are left out, and `[... lines left out]` comes first when any was, or the log was cut.
 export function allowlistedView(text: string, held: (line: string) => boolean = () => false): string {
-  // One character more than the limit, so a cut that lands on a line break leaves that line whole: the line break is the part dropped. A log
-  // liveRoleLogFs.read already cut starts with the marker line, which this cut then drops (it reaches no further back than its own line break).
+  // One character more than the limit, so a cut that lands on a line break leaves that line whole: the line break is the part dropped.
   const over = text.length > REPORT_INPUT_LIMIT;
-  const bounded = over ? fromWholeLine(text.slice(-(REPORT_INPUT_LIMIT + 1))) : text;
-  // The marker counts as a line left out, so the view starts with it whenever anything before the kept lines was dropped.
-  const lines = `${over ? `${LEFT_OUT}\n` : ""}${bounded}`.split(/\r?\n/);
-  const keep = new Array<string | undefined>(lines.length).fill(undefined);
-  const errors: number[] = [];
-  const hosts: number[] = [];
-  const tools: number[] = [];
-  lines.forEach((line, index) => {
-    if (hostLine.test(line)) hosts.push(index);
-    else {
-      const tool = toolName(line);
-      if (tool !== undefined) tools.push(index);
-      else if (errorLine.test(line) && !tokenRun.test(line) && !held(line)) errors.push(index);
+  const lines = (over ? fromWholeLine(text.slice(-(REPORT_INPUT_LIMIT + 1))) : text).split(/\r?\n/);
+  let left = over;
+  const hosts = new Set<string>();
+  const tools = new Set<string>();
+  const errors = new Set<string>();
+  for (const line of lines) {
+    if (line.trim() === "") continue;
+    if (hostLine.test(line)) {
+      // The start line's timestamp is free digits, so it is kept without it.
+      hosts.add(line.startsWith("--- Run started") ? "--- Run started ---" : maskedHostLine(line));
+      continue;
     }
-  });
-  // The start line's timestamp is free digits, so it is kept without it.
-  for (const index of hosts.slice(-REPORT_HOST_LINES)) keep[index] = lines[index]!.startsWith("--- Run started") ? "--- Run started ---" : maskedHostLine(lines[index]!);
-  for (const index of tools.slice(-REPORT_TOOL_LINES)) keep[index] = toolName(lines[index]!);
-  for (const index of errors.slice(-REPORT_ERROR_LINES)) {
-    keep[index] = errorMessage(lines[index]!);
+    const tool = toolName(line);
+    if (tool !== undefined) tools.add(tool);
+    else if (errorLine.test(line) && !tokenRun.test(line) && !held(line)) errors.add(errorMessage(line));
+    else left = true;
   }
-  const out: string[] = [];
-  let left = 0;
-  const flush = () => {
-    if (left > 0) out.push(LEFT_OUT);
-    left = 0;
-  };
-  keep.forEach((kept, index) => {
-    if (kept === undefined) {
-      if (lines[index]!.trim() !== "") left++;
-    } else {
-      flush();
-      // A kept line that repeats the one before it (nothing left out between) is shown once: how many times a forged line was printed is data.
-      if (out.at(-1) !== kept) out.push(kept);
-    }
-  });
-  flush();
+  const out = [...(left ? [LEFT_OUT] : []), ...[...hosts].sort(), ...[...tools].sort(), ...[...errors].sort()];
   return `${out.join("\n")}\n`;
 }
 
@@ -217,7 +185,8 @@ export const buildLogs = new BuildLogs();
 // or log directory is a warning (a directory that doesn't exist is no logs, and no warning).
 // `secrets` defaults to the values .sandcastle/.env gives the sandbox, read once per call. Returns the names it wrote (`reviewer-<n>.log`), including a log it wrote the note for. Beside them it writes
 // REVIEWER_LOG_INDEX, which says for each number the issue whose build wrote the log (from `builds`), or that the host started no build
-// for it, and whether the view couldn't be copied. Each log is read only as far as its last REPORT_INPUT_LIMIT bytes (liveRoleLogFs.read).
+// for it, and whether the view couldn't be copied. At most REPORT_LOG_LIMIT logs are copied (those of builds this run started first, then the others, each by sorted name);
+// when there are more, the index ends with one fixed line saying so, with no count, and the returned names and the numbering cover only the copied ones. Each log is read only as far as its last REPORT_INPUT_LIMIT bytes (liveRoleLogFs.read).
 export function copyReviewerLogs(
   logsDir: string,
   outDir: string,
@@ -236,12 +205,14 @@ export function copyReviewerLogs(
       throw new Error(`the output folder could not be emptied, so nothing was written to it: ${error instanceof Error ? error.message : String(error)}`);
     }
     // Sorted, so the numbers below don't depend on the order the filesystem lists in.
-    const names = fs
+    const all = fs
       .list(logsDir)
       .filter((name) => name.endsWith("-reviewer.log") && !name.endsWith("-pre-push-reviewer.log"))
       .sort();
-    if (names.length === 0) return copied;
-    const omitted = Math.max(0, names.length - REPORT_LOG_LIMIT);
+    if (all.length === 0) return copied;
+    // The logs of builds this run started come first, so files a sandbox added to the folder can't push them out of the limit.
+    const names = [...all.filter((name) => builds.issueOf(name) !== undefined), ...all.filter((name) => builds.issueOf(name) === undefined)];
+    const omitted = names.length > REPORT_LOG_LIMIT;
     names.splice(REPORT_LOG_LIMIT);
     const known = secrets ?? [...sandboxSecrets().values()];
     fs.mkdir(outDir);
@@ -267,7 +238,7 @@ export function copyReviewerLogs(
         index.push(`${outName}: ${label} (not copied)`);
       }
     });
-    if (omitted > 0) index.push(`more than ${REPORT_LOG_LIMIT} reviewer logs: the rest were not copied`);
+    if (omitted) index.push(`more than ${REPORT_LOG_LIMIT} reviewer logs: the rest were not copied`);
     try {
       fs.write(join(outDir, REVIEWER_LOG_INDEX), `${index.join("\n")}\n`);
     } catch (error) {

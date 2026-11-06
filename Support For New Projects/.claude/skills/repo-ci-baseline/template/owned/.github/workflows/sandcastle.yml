@@ -304,9 +304,9 @@ jobs:
       # keep running) can change a file in it before this step uploads it or
       # the next step reads handbacks.json. The reviewers' logs reach its
       # reviewer-logs/ folder through lib/role-logs.mts, which writes an
-      # allowlisted view of each (the last host status lines, the last known
-      # tool names without arguments, and the last few error lines, each only
-      # as a fixed message naming the error word it matched), named
+      # allowlisted view of each (the host status lines, the known tool names
+      # without arguments, and the error words that appeared, each only as a
+      # fixed line in a sorted set: no order, count, number or text), named
       # reviewer-<n>.log and never for the source file, and leaves
       # out a view shaped like a secret. The view narrows what a steered
       # reviewer can print into the artifact: no free text of a log line gets

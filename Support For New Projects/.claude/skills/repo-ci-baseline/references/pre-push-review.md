@@ -57,8 +57,8 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
   (actionlint, zizmor, shellcheck, pytest, `node --test`, `tsc`), so a review in the repo would only raise findings nobody there may fix; the `hardening-review` skill is
   text a person's own session reads, plus two `.py` scripts that pytest covers, and no Sandcastle role reads them; the `.github/instructions/` files steer Copilot's review
   and commit messages, widen no tool and run no code, so a wrong instruction can only shape advice.
-  The remaining single files (`.sandcastle/main.mts` and `status.mts`, configs such as `.editorconfig` and `tsconfig.json`, `LICENSE` and the READMEs) are text or
-  tooling config no role reads as a prompt; `owned-paths.test.mts` lists them.
+  The remaining single files (configs such as `.editorconfig` and `tsconfig.json`, `LICENSE` and the READMEs) are text or tooling config no role reads as a prompt;
+  `owned-paths.test.mts` lists them. `.sandcastle/main.mts` and `status.mts` are host-side code that only wires the reviewed modules together; they stay exempt for now.
   The exemption still judges a path, not bytes, and is a process aid, not a security boundary. A new Owned file is exempt only by a decision: dotfiles'
   `owned-paths.test.mts` fails until a single-file pattern is classified (`REVIEWED_ON_REAPPLY` or its audited exempt list), and until a file under a glob is listed in
   that glob's entry (the workflows, hooks, scripts, instructions, `hardening-review/`, `lib/` and `scripts/tests/`). A re-Apply

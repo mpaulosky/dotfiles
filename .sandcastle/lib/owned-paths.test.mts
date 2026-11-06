@@ -62,7 +62,8 @@ describe("OWNED_PATHS against the Template's template/owned/", () => {
 // instead. checkReview exempts a path by its name, so a new single-file pattern in OWNED_PATHS is
 // exempt by default: it fails the test below until someone puts it in one list or the other.
 // Why they stay exempt: text or tooling config no Sandcastle role reads as a prompt (a wrong one only misleads a person or fails a lint the Template
-// runs), or Sandcastle's entrypoint and status command, which neither run the review nor the gate and which the Sandcastle tests cover.
+// runs). The exception is .sandcastle/main.mts and status.mts, the host's entrypoint and status command: host-side code that wires the reviewed modules
+// (buildIssue, protectHostGit, githubTokensIn) together. They stay exempt for now, and the owner may decide to review them (left open in the review).
 const EXEMPT_ON_REAPPLY_AUDITED: readonly string[] = [
   ".github/pull_request_template.md",
   ".sandcastle/main.mts",

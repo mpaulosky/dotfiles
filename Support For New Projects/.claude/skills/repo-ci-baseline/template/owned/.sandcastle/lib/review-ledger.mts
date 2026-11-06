@@ -151,8 +151,8 @@ export const OWNED_PATHS = [
 // read-only, the pre-push-review skill's SKILL.md (its Severities), lenses.md and review-bar.md, which the host reads into the reviewers' prompts
 // (lib/build.mts#readSkillFiles), the prompts that instruct the pipeline's roles, the
 // local gate's .sandcastle/check.sh, whose watched paths and early exit decide
-// whether the Sandcastle check runs at all, and global.json, which sets the SDK and the msbuild-sdks a build runs.
-// the gate chain (see OWNED_PATHS above), and docs/PROCESS.md.
+// whether the Sandcastle check runs at all, global.json, which sets the SDK and the msbuild-sdks a build runs,
+// docs/PROCESS.md, which review-prompt.md tells a role to follow, and the gate chain (see OWNED_PATHS above).
 // The other files that moved from Seed to Owned (LICENSE, CODE_OF_CONDUCT.md,
 // the READMEs under .security/ and .claude/skills/) are audited text that no
 // role reads, and a wrong one only misleads a person, so they stay exempt.

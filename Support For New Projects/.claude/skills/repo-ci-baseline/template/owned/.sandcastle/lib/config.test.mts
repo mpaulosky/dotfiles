@@ -71,12 +71,12 @@ describe("ROLE_AGENTS", () => {
     // only a comment under it, which a repo that opted in and edited nothing must not pass.
     // The section ends at the next heading of its own level or a higher one, so sub-headings under it are part of it.
     const rules = visibleMarkdown(readFileSync(file("roles/shared-rules.md"), "utf8"));
-    const heading = /^(#{1,6})\s+UI developer\s*$/m.exec(rules);
+    const heading = /^ {0,3}(#{1,6})\s+UI developer\s*$/m.exec(rules);
 
     assert.ok(heading, 'roles/shared-rules.md has no "## UI developer" section outside a comment or an unclosed code fence (either hides everything after it): add one that names the UI files, or the developer and the ui role each leave them to the other');
 
     const afterHeading = rules.slice(heading.index + heading[0].length);
-    const body = (afterHeading.split(new RegExp(`^#{1,${heading[1]!.length}}\\s`, "m"))[0] ?? "").trim();
+    const body = (afterHeading.split(new RegExp(`^ {0,3}#{1,${heading[1]!.length}}\\s`, "m"))[0] ?? "").trim();
 
     assert.notEqual(body, "", 'roles/shared-rules.md\'s "## UI developer" section has only a comment: replace it with the UI files the ui role builds');
   });
@@ -522,11 +522,18 @@ describe("the PR watcher", () => {
 function visibleMarkdown(markdown: string): string {
   const out: string[] = [];
   let fence: RegExp | undefined;
+  let fenceHasText = false;
   let inComment = false;
 
   for (const line of markdown.split(/\r?\n/)) {
     if (fence) {
-      if (fence.test(line)) fence = undefined;
+      if (fence.test(line)) {
+        // An empty fence shows nothing, so only one with text counts as text.
+        if (fenceHasText) out.push("X");
+        fence = undefined;
+      } else if (line.trim() !== "") {
+        fenceHasText = true;
+      }
       continue;
     }
 
@@ -543,7 +550,7 @@ function visibleMarkdown(markdown: string): string {
       if (opener && !(opener[1]!.startsWith("`") && opener[2]!.includes("`"))) {
         const marker = opener[1]![0]!;
         fence = new RegExp(`^ {0,3}\\${marker}{${opener[1]!.length},}\\s*$`);
-        out.push("X");
+        fenceHasText = false;
         continue;
       }
 
@@ -560,7 +567,8 @@ function visibleMarkdown(markdown: string): string {
       }
     }
 
-    out.push(rest);
+    // A line that shows only comments shows nothing.
+    out.push(rest.replace(/<!--.*?-->/g, ""));
   }
 
   return out.join("\n");

@@ -189,6 +189,11 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
         ["a backtick fence a tilde line doesn't close", withText("````md\n<!--\n~~~~\n````"), true],
         ["a line indented four spaces, which is code", section("    <!-- not a comment"), true],
         ["a section of only an indented comment", section("  <!-- the UI files go here -->"), false],
+        ["a comment-only section followed by an indented sibling heading", section("<!-- x -->").replace(/^## Build and tests/m, "  ## Build and tests"), false],
+        ["a section of only an empty fenced block", section("```\n\n```"), false],
+        ["a section of only a whitespace fenced block", section("~~~\n   \n~~~"), false],
+        ["a section of only two comments on one line", section("<!-- UI files --> <!-- TODO -->"), false],
+        ["a section of a comment closed with a second comment after it, then text", section("<!-- a --> <!-- b -->\nThe UI files."), true],
       ];
       for (const [name, text, passes] of reads) {
         writeFileSync(rules, text);

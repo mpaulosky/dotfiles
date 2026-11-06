@@ -67,16 +67,17 @@ export const REAPPLY_BRANCH = "chore/reapply-baseline";
 // default: either the Template's own gate checks the file's content (the
 // workflows, hooks, scripts, .sandcastle/lib/ and their tests: actionlint,
 // zizmor, shellcheck, pytest, tsc and the rest; the hardening-review skill's
-// .py scripts are covered by pytest), or it is text no unattended role reads
-// (the hardening-review skill's text, which a person's own session reads, and
-// the .github/instructions/ files, which steer Copilot's review). A file no
-// Template check can judge, or that an unattended role reads as its prompt (the
+// .py scripts are covered by pytest), or it is text no Sandcastle role reads
+// (the hardening-review skill's text, which a person's own session reads), or
+// it steers only Copilot's review and commit messages and widens no tool and
+// runs no code (the .github/instructions/ files, so a wrong instruction can only
+// shape advice). A file no Template check can judge, or that a Sandcastle role
+// reads as its prompt (the
 // pre-push-review skill's SKILL.md, lenses.md and review-bar.md, which the host
 // puts into its reviewers' prompts), goes in REVIEWED_ON_REAPPLY. In dotfiles,
 // lib/owned-paths.test.mts enforces it: a single-file pattern must be
-// classified there, and a file under a glob must be one the glob's entry lists
-// (workflows, instructions, lib/) or the kind it allows (hooks, scripts,
-// hardening-review, scripts/tests), so a new Owned file is never exempt unseen.
+// classified there, and a file under a glob must be listed in that glob's
+// entry, so a new Owned file is never exempt unseen.
 export const OWNED_PATHS = [
   ".github/workflows/*.yml",
   ".github/hooks/**",

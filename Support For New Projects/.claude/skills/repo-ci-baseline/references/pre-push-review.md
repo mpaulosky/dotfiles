@@ -53,11 +53,11 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
   needs a review like any other change: the exemption judges a path, and a repo has no Template copy to compare. The gate's message names those files.
   The rest stay exempt on purpose: the workflows, hooks, scripts and `lib/` modules (and their tests) are linted and tested by the Template's own gate
   (actionlint, zizmor, shellcheck, pytest, `node --test`, `tsc`), so a review in the repo would only raise findings nobody there may fix; the `hardening-review` skill is
-  text a person's own session reads, plus two `.py` scripts that pytest covers, and the `.github/instructions/` files steer Copilot's review and commit messages:
-  none of them is a prompt for an unattended role.
+  text a person's own session reads, plus two `.py` scripts that pytest covers, and no Sandcastle role reads them; the `.github/instructions/` files steer Copilot's review
+  and commit messages, widen no tool and run no code, so a wrong instruction can only shape advice.
   The exemption still judges a path, not bytes, and is a process aid, not a security boundary. A new Owned file is exempt only by a decision: dotfiles'
-  `owned-paths.test.mts` fails until a single-file pattern is classified (`REVIEWED_ON_REAPPLY` or its audited exempt list), and until a file under a glob is one the glob's
-  entry lists (the workflows, the instructions and `lib/`) or the kind it allows (hooks, scripts, `hardening-review/`, `scripts/tests/`). A re-Apply
+  `owned-paths.test.mts` fails until a single-file pattern is classified (`REVIEWED_ON_REAPPLY` or its audited exempt list), and until a file under a glob is listed in
+  that glob's entry (the workflows, hooks, scripts, instructions, `hardening-review/`, `lib/` and `scripts/tests/`). A re-Apply
   that writes one of the reviewed files (a repo whose `coverage-threshold` isn't already `80`, or that lacks the file, gets it from its first one) is refused at `reapply.sh`'s first
   push, which leaves the Apply commit on `chore/reapply-baseline` unpushed. Review it in that worktree with `/pre-push-review`, then run `reapply.sh` again: step 1
   carries the never-pushed branch on. A finding in a Template file goes to the Template in a dotfiles PR, not to an edit in the repo.

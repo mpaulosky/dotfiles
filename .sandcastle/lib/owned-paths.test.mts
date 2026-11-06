@@ -168,10 +168,10 @@ describe("the files a re-Apply may write without a review", () => {
 });
 
 // mpaulosky/dotfiles#394: a glob in OWNED_PATHS exempts every file under it from the re-Apply review by path, so a new file under one is exempt
-// unseen. Each glob is a decision here, in one of two forms: `files`, the exact set of files the glob may hold (a new file under it fails the
-// test below until someone adds it), or `allowed`, the kind of file it may hold (a test that can fail only when the kind is narrower than the
-// glob's own pattern). A file REVIEWED_ON_REAPPLY names is classified wherever it sits, since checkReview reviews it whatever glob it falls under.
-type GlobEntry = { why: string } & ({ files: readonly string[]; allowed?: never } | { allowed: RegExp; files?: never });
+// unseen. Each glob is a decision here: `files` is the exact set of files the glob may hold, so a new file under it fails the tests below until
+// someone adds it (a kind of file, such as "any .py", would let a new script through unseen). A file REVIEWED_ON_REAPPLY names is classified
+// wherever it sits, since checkReview reviews it whatever glob it falls under: it stays out of `files`.
+type GlobEntry = { why: string; files: readonly string[] };
 
 const EXEMPT_GLOBS_AUDITED: Readonly<Record<string, GlobEntry>> = {
   ".github/workflows/*.yml": {
@@ -183,13 +183,53 @@ const EXEMPT_GLOBS_AUDITED: Readonly<Record<string, GlobEntry>> = {
     ],
     why: "the Template's gate runs actionlint, zizmor, yamllint and the workflow tests over them",
   },
-  ".github/hooks/**": { allowed: /(?:^|\/)(?:[^./]+|[^/]*\.sh)$/, why: "the bash hook tests and shellcheck run over them" },
-  ".github/scripts/**": { allowed: /\.(?:py|mjs)$/, why: "pytest and node --test run over them" },
+  ".github/hooks/**": { files: [
+      ".github/hooks/post-checkout",
+      ".github/hooks/pre-commit",
+      ".github/hooks/pre-push",
+      ".github/hooks/tests/pre-commit.test.sh",
+      ".github/hooks/tests/pre-push.test.sh",
+    ], why: "the bash hook tests and shellcheck run over them; they run on the host, so a new hook is a decision" },
+  ".github/scripts/**": { files: [
+      ".github/scripts/backfill_blog_posts.py",
+      ".github/scripts/check_gh_repo.py",
+      ".github/scripts/detect_changes.py",
+      ".github/scripts/discover_tests.py",
+      ".github/scripts/draft_release.py",
+      ".github/scripts/load_test_env.py",
+      ".github/scripts/post_claude_review.py",
+      ".github/scripts/release_post.py",
+      ".github/scripts/release_queue.py",
+      ".github/scripts/tests/conftest.py",
+      ".github/scripts/tests/pr-automerge.test.mjs",
+      ".github/scripts/tests/test_backfill_blog_posts.py",
+      ".github/scripts/tests/test_claude_review_copilot_gate.py",
+      ".github/scripts/tests/test_claude_review_merge_check.py",
+      ".github/scripts/tests/test_claude_review_resolved_threads.py",
+      ".github/scripts/tests/test_claude_review_review_notes.py",
+      ".github/scripts/tests/test_claude_review_split_diff.py",
+      ".github/scripts/tests/test_detect_changes.py",
+      ".github/scripts/tests/test_discover_tests.py",
+      ".github/scripts/tests/test_draft_release.py",
+      ".github/scripts/tests/test_load_test_env.py",
+      ".github/scripts/tests/test_pat_calls.py",
+      ".github/scripts/tests/test_post_claude_review.py",
+      ".github/scripts/tests/test_release_post.py",
+      ".github/scripts/tests/test_release_queue.py",
+    ], why: "pytest and node --test run over them; they run in CI with tokens, so a new script is a decision" },
   ".github/instructions/*.md": {
     files: [".github/instructions/blog.instructions.md", ".github/instructions/git-commit-instructions.md", ".github/instructions/markdown.instructions.md"],
-    why: "steer Copilot's review and commit messages, linted by markdownlint; they widen no tool and run no code",
+    why: "steer Copilot's review and commit messages, linted by markdownlint; they widen no tool and run no code, so a wrong instruction can only shape advice",
   },
-  ".claude/skills/hardening-review/**": { allowed: /\.(?:md|py)$/, why: "text a person's session reads when they run the hardening review, and its two .py scripts, which pytest covers; no unattended role reads them" },
+  ".claude/skills/hardening-review/**": { files: [
+      ".claude/skills/hardening-review/SKILL.md",
+      ".claude/skills/hardening-review/references/brief.md",
+      ".claude/skills/hardening-review/references/mutations.md",
+      ".claude/skills/hardening-review/references/state.md",
+      ".claude/skills/hardening-review/references/triage.md",
+      ".claude/skills/hardening-review/scripts/known_open.py",
+      ".claude/skills/hardening-review/scripts/mutate.py",
+    ], why: "text a person's session reads when they run the hardening review, and its two .py scripts, which pytest covers; no Sandcastle role reads them" },
   ".sandcastle/lib/*.mts": {
     files: [
       "agents.mts", "agents.test.mts", "branches.mts", "branches.test.mts", "build.mts", "build.test.mts", "building.mts", "building.test.mts", "checkpoint.mts",
@@ -206,10 +246,16 @@ const EXEMPT_GLOBS_AUDITED: Readonly<Record<string, GlobEntry>> = {
     ].map((name) => `.sandcastle/lib/${name}`),
     why: "tsc and the Sandcastle tests run over them; they run on the host, so a new module is a decision, not a default",
   },
-  "scripts/tests/**": { allowed: /\.test\.sh$/, why: "test.sh runs them" },
+  "scripts/tests/**": { files: [
+      "scripts/tests/check-branch-name.test.sh",
+      "scripts/tests/check-git-hooks.test.sh",
+      "scripts/tests/check-pr-title.test.sh",
+      "scripts/tests/sync-copilot-review.test.sh",
+      "scripts/tests/watch-pr.test.sh",
+    ], why: "test.sh runs them" },
 };
 
-// The files under the exempt globs that the audit doesn't classify, as "<file> (under <glob>)". A file REVIEWED_ON_REAPPLY names is reviewed on a
+// The files under the exempt globs that the audit doesn't list, as "<file> (under <glob>)". A file REVIEWED_ON_REAPPLY names is reviewed on a
 // re-Apply wherever it sits, so it is classified even under a glob.
 const unclassifiedUnderGlobs = (files: readonly string[], audited: Readonly<Record<string, GlobEntry>>, reviewed: ReadonlySet<string>): string[] => {
   const unexpected: string[] = [];
@@ -217,12 +263,18 @@ const unclassifiedUnderGlobs = (files: readonly string[], audited: Readonly<Reco
     const under = patternFor(glob);
     for (const file of files) {
       if (!under(file) || reviewed.has(file)) continue;
-      const classified = entry.files === undefined ? entry.allowed.test(file) : entry.files.includes(file);
-      if (!classified) unexpected.push(`${file} (under ${glob})`);
+      if (!entry.files.includes(file)) unexpected.push(`${file} (under ${glob})`);
     }
   }
   return unexpected;
 };
+
+// The globs whose `files` entry differs from the files present under the glob. A file REVIEWED_ON_REAPPLY names is reviewed wherever it sits,
+// so it is not listed.
+const filesDrift = (present: readonly string[], audited: Readonly<Record<string, GlobEntry>>, reviewed: ReadonlySet<string>): string[] =>
+  Object.entries(audited)
+    .filter(([glob, entry]) => JSON.stringify([...entry.files].sort()) !== JSON.stringify(present.filter((file) => patternFor(glob)(file) && !reviewed.has(file)).sort()))
+    .map(([glob]) => glob);
 
 describe("the globs that exempt a whole folder from the re-Apply review (mpaulosky/dotfiles#394)", () => {
   const globs = OWNED_PATHS.filter((pattern) => pattern.includes("*"));
@@ -230,7 +282,7 @@ describe("the globs that exempt a whole folder from the re-Apply review (mpaulos
   it("has every glob in OWNED_PATHS classified in EXEMPT_GLOBS_AUDITED", () => {
     const unclassified = globs.filter((glob) => !Object.hasOwn(EXEMPT_GLOBS_AUDITED, glob));
 
-    assert.deepEqual(unclassified, [], "a new glob exempts every file under it from the re-Apply review: add it to EXEMPT_GLOBS_AUDITED with the files or the kind of file it may hold and why skipping the review is safe, or name the files as single-file patterns");
+    assert.deepEqual(unclassified, [], "a new glob exempts every file under it from the re-Apply review: add it to EXEMPT_GLOBS_AUDITED with the files it may hold and why skipping the review is safe, or name the files as single-file patterns");
   });
 
   it("has no EXEMPT_GLOBS_AUDITED entry that isn't a glob in OWNED_PATHS", () => {
@@ -243,20 +295,26 @@ describe("the globs that exempt a whole folder from the re-Apply review (mpaulos
     for (const [glob, { why }] of Object.entries(EXEMPT_GLOBS_AUDITED)) assert.ok(why.trim().length > 0, glob);
   });
 
-  it("holds under each exempt glob only the files or the kind of file its entry allows", () => {
+  it("holds under each exempt glob only the files its entry lists", () => {
     const unexpected = unclassifiedUnderGlobs(filesUnder(owned), EXEMPT_GLOBS_AUDITED, REVIEWED_ON_REAPPLY);
 
-    assert.deepEqual(unexpected, [], "a new file under an exempt glob would skip the re-Apply review unseen: add it to the entry's `files` (or widen `allowed`) once someone has read it, or name it as a single-file pattern in OWNED_PATHS and put it in REVIEWED_ON_REAPPLY if it carries behaviour");
+    assert.deepEqual(unexpected, [], "a new file under an exempt glob would skip the re-Apply review unseen: add it to the entry's `files` once someone has read it, or name it as a single-file pattern in OWNED_PATHS and put it in REVIEWED_ON_REAPPLY if it carries behaviour");
   });
 
   it("lists in each `files` entry exactly the files that exist under its glob", () => {
-    const present = filesUnder(owned);
-    for (const [glob, entry] of Object.entries(EXEMPT_GLOBS_AUDITED)) {
-      if (entry.files === undefined) continue;
-      const under = patternFor(glob);
+    assert.deepEqual(filesDrift(filesUnder(owned), EXEMPT_GLOBS_AUDITED, REVIEWED_ON_REAPPLY), []);
+  });
 
-      assert.deepEqual([...entry.files].sort(), present.filter(under).sort(), glob);
-    }
+  it("leaves a file REVIEWED_ON_REAPPLY names out of its glob's `files`, and reports it when it is listed anyway", () => {
+    const file = ".sandcastle/lib/new.mts";
+    const glob = ".sandcastle/lib/*.mts";
+    const entry = EXEMPT_GLOBS_AUDITED[glob]!;
+    const present = [...filesUnder(owned), file];
+    const withoutFile = { ...EXEMPT_GLOBS_AUDITED, [glob]: entry };
+
+    assert.deepEqual(filesDrift(present, withoutFile, new Set([file])), []);
+    assert.deepEqual(filesDrift(present, withoutFile, new Set()), [glob]);
+    assert.deepEqual(filesDrift(present, { ...withoutFile, [glob]: { ...entry, files: [...entry.files!, file] } }, new Set([file])), [glob]);
   });
 
   it("finds files under every exempt glob, so a check isn't vacuous", () => {
@@ -270,15 +328,15 @@ describe("the globs that exempt a whole folder from the re-Apply review (mpaulos
       ".github/workflows/*.yml": ".github/workflows/new.yml",
       ".github/instructions/*.md": ".github/instructions/new.md",
       ".sandcastle/lib/*.mts": ".sandcastle/lib/new.mts",
+      ".github/hooks/**": ".github/hooks/post-merge",
+      ".github/scripts/**": ".github/scripts/new.py",
+      ".claude/skills/hardening-review/**": ".claude/skills/hardening-review/scripts/new.py",
+      "scripts/tests/**": "scripts/tests/new.test.sh",
     };
     for (const [glob, file] of Object.entries(fabricated)) {
       assert.ok(patternFor(glob)(file), `${file} is under ${glob}`);
       assert.deepEqual(unclassifiedUnderGlobs([...present, file], EXEMPT_GLOBS_AUDITED, REVIEWED_ON_REAPPLY), [`${file} (under ${glob})`]);
     }
-  });
-
-  it("reports a file of another kind under a kind glob, and passes one of the kind", () => {
-    assert.deepEqual(unclassifiedUnderGlobs(["scripts/tests/x.json", "scripts/tests/x.test.sh"], EXEMPT_GLOBS_AUDITED, new Set()), ["scripts/tests/x.json (under scripts/tests/**)"]);
   });
 
   it("accepts a file REVIEWED_ON_REAPPLY names even when it sits under an exempt glob", () => {

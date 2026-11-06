@@ -19,6 +19,7 @@ import {
   REPORT_LINE_LIMIT,
   REPORT_TOKEN_RUN,
   liveRoleLogFs,
+  readLogTail,
   type RoleLogFs,
 } from "./role-logs.mts";
 
@@ -658,12 +659,11 @@ describe("the input limit", () => {
     });
   });
 
-  it("does not cut a log it has already cut again: the marker line is not counted against the limit", () => {
+  it("shows a log it read cut as the marker and the whole of its kept tail, not cut a second time", () => {
     inTemp((root) => {
       const file = join(root, "a-reviewer.log");
       writeFileSync(file, logOf(REPORT_INPUT_LIMIT + 1));
-      const view = allowlistedView(liveRoleLogFs.read(file));
-      assert.equal(view, `${LEFT_OUT}\n${late}`);
+      assert.equal(allowlistedView(liveRoleLogFs.read(file)), `${LEFT_OUT}\n${late}`);
     });
   });
 
@@ -681,7 +681,7 @@ describe("the input limit", () => {
       const file = join(root, "a-reviewer.log");
       writeFileSync(file, aligned);
       assert.ok(liveRoleLogFs.read(file).includes("Error: early failure"));
-      // The marker read adds in front is not counted against the limit, so the view does not cut the same log a second time.
+      // The marker read adds in front makes the text a little longer than the limit; the view's own cut still keeps the whole tail.
       assert.ok(allowlistedView(liveRoleLogFs.read(file)).includes("Error: early failure"));
       writeFileSync(file, exact);
       assert.ok(!liveRoleLogFs.read(file).includes("Error: early failure"));
@@ -716,7 +716,7 @@ describe("the input limit", () => {
     inTemp((root) => {
       const file = join(root, "a-reviewer.log");
       const head = `${"é".repeat(5)}\n`;
-      // The window starts `offset` bytes into the file: 1 is the second byte of the first é, 2 the first byte of the second.
+      // The window starts `offset` bytes into the file: 1 is the second byte of the first é (a half character), 2 the first byte of the second (the boundary).
       for (const offset of [1, 2]) {
         const filler = "a".repeat(REPORT_INPUT_LIMIT + 1 + offset - Buffer.byteLength(head) - Buffer.byteLength(late) - 1);
         writeFileSync(file, `${head}${filler}\n${late}`);
@@ -729,16 +729,35 @@ describe("the input limit", () => {
     });
   });
 
-  it("refuses a log that is not a regular file, without opening it first: a symlink, a directory and a FIFO that would block", { timeout: 20_000 }, () => {
+  it("refuses a log that is not a regular file before opening it: a symlink, a directory and a FIFO", () => {
     inTemp((root) => {
       writeFileSync(join(root, "target"), "x");
       symlinkSync(join(root, "target"), join(root, "link-reviewer.log"));
-      assert.throws(() => liveRoleLogFs.read(join(root, "link-reviewer.log")), { code: "ELOOP" });
+      assert.throws(() => liveRoleLogFs.read(join(root, "link-reviewer.log")), /not a regular file/);
       mkdirSync(join(root, "dir-reviewer.log"));
       assert.throws(() => liveRoleLogFs.read(join(root, "dir-reviewer.log")), /not a regular file/);
-      // A FIFO opened for reading blocks until a writer opens it, which a sandbox that can swap one in would never do.
-      const made = spawnSync("mkfifo", [join(root, "fifo-reviewer.log")]);
-      if (made.status === 0) assert.throws(() => liveRoleLogFs.read(join(root, "fifo-reviewer.log")), /not a regular file/);
+      assert.deepEqual(readLogTail(join(root, "target")), "x");
+    });
+  });
+
+  it("still refuses what the open finds when the entry was swapped after the check (the check stood in by one that passes): a symlink, a directory", () => {
+    inTemp((root) => {
+      writeFileSync(join(root, "target"), "x");
+      symlinkSync(join(root, "target"), join(root, "link-reviewer.log"));
+      assert.throws(() => readLogTail(join(root, "link-reviewer.log"), () => true), { code: "ELOOP" });
+      mkdirSync(join(root, "dir-reviewer.log"));
+      assert.throws(() => readLogTail(join(root, "dir-reviewer.log"), () => true), /not a regular file/);
+    });
+  });
+
+  it("does not wait for a writer on a FIFO swapped in after the check (run in a child process, since a wait would block this one)", (t) => {
+    inTemp((root) => {
+      const fifo = join(root, "fifo-reviewer.log");
+      if (spawnSync("mkfifo", [fifo]).status !== 0) return t.skip("mkfifo is not available");
+      const module = new URL("./role-logs.mts", import.meta.url).href;
+      const script = `import(${JSON.stringify(module)}).then((m) => { try { m.readLogTail(${JSON.stringify(fifo)}, () => true); process.exit(4); } catch (e) { process.exit(e.message === "not a regular file" ? 0 : 3); } });`;
+      const run = spawnSync(process.execPath, ["-e", script], { timeout: 15_000, encoding: "utf8" });
+      assert.equal(run.status, 0, `exit ${run.status}, signal ${run.signal}: ${run.stderr}`);
     });
   });
 });

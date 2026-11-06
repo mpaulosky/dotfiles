@@ -35,6 +35,8 @@ import { limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
 const sharedRules = readFileSync(new URL("../roles/shared-rules.md", import.meta.url), "utf8");
+// roles/skills.md is the repo's own Seed file; withSharedRules passes its text trimmed as {{REPO_SKILLS}}.
+const repoSkills = readFileSync(new URL("../roles/skills.md", import.meta.url), "utf8").trim();
 
 describe("roleOptions", () => {
   it("builds the ui role's options from its ROLE_AGENTS entry, and refuses it when the repo has none", async () => {
@@ -179,7 +181,7 @@ describe("runRoleInSandbox", () => {
 
     await runRoleInSandbox(sandbox, "reviewer", { promptFile: "./review.md", promptArgs: { TASK_ID: "3" } });
 
-    assert.deepEqual(runs[0]!.promptArgs, { TASK_ID: "3", SHARED_RULES: sharedRules });
+    assert.deepEqual(runs[0]!.promptArgs, { TASK_ID: "3", SHARED_RULES: sharedRules, REPO_SKILLS: repoSkills });
   });
 
   // A run must stop cleanly at the time budget or Claude's usage limit,
@@ -293,10 +295,24 @@ describe("isRoleTimeout", () => {
 });
 
 describe("withSharedRules", () => {
-  it("adds the shared rules to a prompt file's arguments", () => {
+  it("adds the shared rules and the repo's skills to a prompt file's arguments", () => {
     const options = withSharedRules({ promptFile: "./plan.md" });
 
-    assert.deepEqual(options.promptArgs, { SHARED_RULES: sharedRules });
+    assert.deepEqual(options.promptArgs, { SHARED_RULES: sharedRules, REPO_SKILLS: repoSkills });
+  });
+
+  it("adds roles/skills.md's text as REPO_SKILLS, trimmed, and the shared rules as they are", () => {
+    const { promptArgs } = withSharedRules({ promptFile: "./plan.md" });
+
+    assert.equal(promptArgs?.REPO_SKILLS, repoSkills);
+    assert.equal(promptArgs?.REPO_SKILLS, String(promptArgs?.REPO_SKILLS).trim());
+    assert.equal(promptArgs?.SHARED_RULES, sharedRules);
+  });
+
+  it("keeps the arguments the caller passed alongside the two it adds", () => {
+    const { promptArgs } = withSharedRules({ promptFile: "./plan.md", promptArgs: { TASK_ID: "7", ISSUES_JSON: "[]" } });
+
+    assert.deepEqual(promptArgs, { TASK_ID: "7", ISSUES_JSON: "[]", SHARED_RULES: sharedRules, REPO_SKILLS: repoSkills });
   });
 
   it("leaves an inline prompt alone, since Sandcastle rejects arguments for one", () => {

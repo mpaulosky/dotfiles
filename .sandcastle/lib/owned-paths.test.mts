@@ -88,6 +88,41 @@ const EXEMPT_ON_REAPPLY_AUDITED: readonly string[] = [
   "GitVersion.yml",
 ];
 
+// mpaulosky/dotfiles#392: the nine prompts that instruct the pipeline's roles are Owned, each named as a single file. The pattern
+// `.sandcastle/roles/*.md` would also catch the repo's own Seed roles/shared-rules.md and roles/skills.md.
+const ROLE_PROMPTS = [
+  ".sandcastle/plan-prompt.md",
+  ".sandcastle/review-prompt.md",
+  ...["architect", "backend", "tester", "follow-up", "gate-fixer", "scribe", "ui"].map((role) => `.sandcastle/roles/${role}.md`),
+];
+
+describe("the role prompts (mpaulosky/dotfiles#392)", () => {
+  it("are Owned: a pattern covers each of the nine", () => {
+    assert.equal(ROLE_PROMPTS.length, 9);
+    for (const file of ROLE_PROMPTS) {
+      assert.equal(underOwnedPattern(file), true, file);
+      assert.equal(OWNED_PATHS.includes(file as never), true, `${file} is named in OWNED_PATHS as an explicit path`);
+    }
+  });
+
+  it("leave the repo's own roles/shared-rules.md and roles/skills.md out of Owned", () => {
+    for (const file of [".sandcastle/roles/shared-rules.md", ".sandcastle/roles/skills.md"]) {
+      assert.equal(underOwnedPattern(file), false, file);
+      assert.equal(isOwnedPath(file), false, file);
+    }
+  });
+
+  it("are files in the Template's Owned folder, and none of them in its Seed", () => {
+    const seeded = join(owned, "..", "seed");
+    for (const file of ROLE_PROMPTS) {
+      assert.ok(filesUnder(owned).includes(file), `${file} is not under template/owned/`);
+      assert.equal(filesUnder(seeded).includes(file), false, `${file} is still in template/seed/`);
+    }
+    assert.ok(filesUnder(seeded).includes(".sandcastle/roles/skills.md"), "template/seed/ has no .sandcastle/roles/skills.md");
+    assert.ok(filesUnder(seeded).includes(".sandcastle/roles/shared-rules.md"), "template/seed/ has no .sandcastle/roles/shared-rules.md");
+  });
+});
+
 describe("the files a re-Apply may write without a review", () => {
   const singleFiles: string[] = OWNED_PATHS.filter((pattern) => !pattern.includes("*"));
 
@@ -97,8 +132,15 @@ describe("the files a re-Apply may write without a review", () => {
     assert.deepEqual(unclassified, [], "a new Owned file skips the review on a re-Apply by its path alone: put it in REVIEWED_ON_REAPPLY if it carries behaviour, or in EXEMPT_ON_REAPPLY_AUDITED here once someone has read it");
   });
 
-  it("reviews the files whose content widens what the review, the judging roles or the build can do", () => {
-    for (const file of [".claude/agents/pre-push-reviewer.md", ".sandcastle/critique-prompt.md", ".sandcastle/intake-prompt.md", ".sandcastle/check.sh", "global.json"]) {
+  it("reviews the files whose content widens what the review, the pipeline's roles or the build can do", () => {
+    for (const file of [
+      ".claude/agents/pre-push-reviewer.md",
+      ".sandcastle/critique-prompt.md",
+      ".sandcastle/intake-prompt.md",
+      ".sandcastle/check.sh",
+      "global.json",
+      ...ROLE_PROMPTS,
+    ]) {
       assert.equal(REVIEWED_ON_REAPPLY.has(file), true, file);
     }
   });

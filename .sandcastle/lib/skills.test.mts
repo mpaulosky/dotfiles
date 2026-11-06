@@ -428,32 +428,50 @@ describe("listedSkills", () => {
   });
 });
 
-// SANDBOX_SKILLS mounts the skills; the prompts tell the agent to use them. The two must agree, or a prompt promises a skill the
-// sandbox doesn't have, or the sandbox mounts one no prompt mentions.
-describe("role prompts and SANDBOX_SKILLS", () => {
+// SANDBOX_SKILLS mounts the skills; roles/skills.md tells the agent to use them, and withSharedRules hands its text to the prompts as
+// {{REPO_SKILLS}} (mpaulosky/dotfiles#392). The two must agree, or the file promises a skill the sandbox doesn't have, or the sandbox
+// mounts one nothing mentions.
+describe("roles/skills.md and SANDBOX_SKILLS", () => {
   const rolesDir = new URL("../roles/", import.meta.url);
   const prompt = (role: string) => readFileSync(new URL(`${role}.md`, rolesDir), "utf8");
-  const roles = readdirSync(rolesDir).filter((file) => file.endsWith(".md")).map((file) => file.slice(0, -3));
+  const skillsFile = () => prompt("skills");
 
-  it("lists no skill that SANDBOX_SKILLS doesn't mount, in any role prompt", () => {
-    for (const role of roles) {
-      const unmounted = listedSkills(prompt(role)).filter((name) => !SANDBOX_SKILLS.includes(name));
+  it("lists no skill that SANDBOX_SKILLS doesn't mount, in roles/skills.md", () => {
+    const unmounted = listedSkills(skillsFile()).filter((name) => !SANDBOX_SKILLS.includes(name));
 
-      assert.deepEqual(unmounted, [], `roles/${role}.md lists skills lib/repo-config.mts doesn't mount`);
-    }
+    assert.deepEqual(unmounted, [], "roles/skills.md lists skills lib/repo-config.mts doesn't mount");
   });
 
-  // The roles that write code and tests each list every mounted skill; the ui role only in a repo that opted into it.
-  for (const role of ["tester", "backend", "ui"]) {
-    it(`lists every mounted skill in the ${role} prompt`, { skip: role === "ui" && !uiEnabled() && "the repo hasn't opted into the ui role" }, () => {
-      const listed = listedSkills(prompt(role));
-      const missing = SANDBOX_SKILLS.filter((name) => !listed.includes(name));
+  it("lists every mounted skill in roles/skills.md", () => {
+    const listed = listedSkills(skillsFile());
+    const missing = SANDBOX_SKILLS.filter((name) => !listed.includes(name));
 
-      assert.deepEqual(
-        missing,
-        [],
-        `roles/${role}.md doesn't list skills lib/repo-config.mts mounts: add or complete its "# SKILLS" section, one "- \`name\`: when to use it" line per skill (the repo-ci-baseline skill's references/sandcastle.md shows the block)`,
-      );
+    assert.deepEqual(
+      missing,
+      [],
+      `roles/skills.md doesn't list skills lib/repo-config.mts mounts: add or complete its "# SKILLS" section, one "- \`name\`: when to use it" line per skill (the repo-ci-baseline skill's references/sandcastle.md shows the block)`,
+    );
+  });
+
+  // The roles that write code and tests get the file's text; the ui role only in a repo that opted into it.
+  for (const role of ["tester", "backend", "ui"]) {
+    it(`puts {{REPO_SKILLS}} in the ${role} prompt, on a line of its own`, { skip: role === "ui" && !uiEnabled() && "the repo hasn't opted into the ui role" }, () => {
+      const lines = prompt(role).split(/\r?\n/);
+      const at = lines.indexOf("{{REPO_SKILLS}}");
+
+      assert.notEqual(at, -1, `roles/${role}.md has no line holding only {{REPO_SKILLS}}`);
+      assert.equal(lines.filter((line) => line.includes("{{REPO_SKILLS}}")).length, 1, `roles/${role}.md names {{REPO_SKILLS}} more than once`);
+      assert.equal(lines[at - 1], "", "a blank line goes before it");
+      assert.equal(lines[at + 1], "", "a blank line goes after it");
     });
   }
+
+  it("leaves no # SKILLS section inline in a role prompt, since the block lives in roles/skills.md", () => {
+    const owned = readdirSync(rolesDir)
+      .filter((file) => file.endsWith(".md") && file !== "skills.md" && file !== "shared-rules.md")
+      .map((file) => file.slice(0, -3));
+
+    assert.ok(owned.includes("tester") && owned.includes("backend"), "the role prompts weren't found");
+    for (const role of owned) assert.doesNotMatch(prompt(role), /^# SKILLS\s*$/m, `roles/${role}.md keeps its own # SKILLS section`);
+  });
 });

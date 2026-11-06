@@ -112,8 +112,11 @@ export function backendPromptArgs(issue: SandcastleIssue, branch: string, uiRuns
 
 // The host names branches and has already dropped issues with an open PR, so
 // the planner needs only the ready issues.
-export function plannerPromptArgs(ready: SandcastleIssue[]) {
-  return { ISSUES_JSON: JSON.stringify(ready) };
+// Stub (mpaulosky/dotfiles#392): the planner's `ui` bullet, shown only when the repo opted into the ui role.
+export const UI_ROLE_BULLET = "";
+
+export function plannerPromptArgs(ready: SandcastleIssue[], _uiRole = false) {
+  return { ISSUES_JSON: JSON.stringify(ready), UI_ROLE: "" };
 }
 
 // The issues intake must judge against the Definition of Ready: every open

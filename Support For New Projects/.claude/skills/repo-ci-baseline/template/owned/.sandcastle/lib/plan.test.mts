@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { OPTIONAL_ROLES } from "./config.mts";
 import { uiEnabled } from "./agents.mts";
 import { readyPicks, resolveFiles, resolveRoles } from "./plan.mts";
+import { plannerPromptArgs, UI_ROLE_BULLET } from "./prompts.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
 describe("readyPicks", () => {
@@ -41,6 +43,28 @@ describe("readyPicks", () => {
     const picks = readyPicks([{ id: "4", title: "A", files: ["lib/a.mts"] }], ready, () => {});
 
     assert.deepEqual(picks[0]?.files, ["lib/a.mts"]);
+  });
+});
+
+// mpaulosky/dotfiles#392: the planner offers the `ui` role only in a repo that opted into it, by the same test resolveRoles uses.
+describe("planRound's ui bullet", () => {
+  // planRound starts a real sandbox through runRole, which it doesn't let a caller replace, so the call is read from its source.
+  it("asks plannerPromptArgs for the ui bullet exactly when uiEnabled() says the repo opted in", () => {
+    const source = readFileSync(new URL("./plan.mts", import.meta.url), "utf8");
+
+    assert.match(source, /plannerPromptArgs\(ready, uiEnabled\(\)\)/);
+  });
+
+  it("gives the planner the bullet when uiEnabled() is true and nothing when it is false, the way resolveRoles decides", async () => {
+    await withUiRole(true, () => {
+      assert.equal(plannerPromptArgs([], uiEnabled()).UI_ROLE, UI_ROLE_BULLET);
+      assert.match(plannerPromptArgs([], uiEnabled()).UI_ROLE, /^- `ui`:/);
+      assert.ok(resolveRoles(undefined).includes("ui"));
+    });
+    await withUiRole(false, () => {
+      assert.equal(plannerPromptArgs([], uiEnabled()).UI_ROLE, "");
+      assert.ok(!resolveRoles(undefined).includes("ui"));
+    });
   });
 });
 

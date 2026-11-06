@@ -65,7 +65,7 @@ describe("ROLE_AGENTS", () => {
 
     assert.ok(existsSync(file("roles/ui.md")), "roles/ui.md is missing");
     assert.match(readFileSync(file("roles/backend.md"), "utf8"), /\{\{UI_DEVELOPER\}\}/);
-    assert.match(readFileSync(file("plan-prompt.md"), "utf8"), /^- `ui`:/m);
+    assert.match(readFileSync(file("plan-prompt.md"), "utf8"), /\{\{UI_ROLE\}\}/, "plan-prompt.md is missing {{UI_ROLE}}, where the host puts the planner's ui bullet");
   });
 });
 

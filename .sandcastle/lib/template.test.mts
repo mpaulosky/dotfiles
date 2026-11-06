@@ -92,9 +92,10 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
   });
 
   // config.test.mts skips its check of the ui prompts in a repo that hasn't opted in, which is every config this repo runs it under, so
-  // here it runs where it can fail: a scratch repo with the Seed's ui entry uncommented, first without the planner's ui bullet, then
-  // with the bullet but without roles/ui.md, then with both, then with backend.md lacking {{UI_DEVELOPER}}.
-  it("fails config.test.mts's ui prompt check for an opted-in repo without the planner's ui bullet, roles/ui.md or backend.md's {{UI_DEVELOPER}}, and passes with all three", { timeout: 120_000 }, () => {
+  // here it runs where it can fail: a scratch repo with the Seed's ui entry uncommented. The role is Owned and opt-in
+  // (mpaulosky/dotfiles#392), so the Template's own prompts pass it as shipped, and it fails when roles/ui.md, the planner's {{UI_ROLE}} or
+  // backend.md's {{UI_DEVELOPER}} is missing.
+  it("passes config.test.mts's ui prompt check for an opted-in repo as the Template ships, and fails it without roles/ui.md, plan-prompt.md's {{UI_ROLE}} or backend.md's {{UI_DEVELOPER}}", { timeout: 120_000 }, () => {
     const config = join(sandcastle, "lib/repo-config.mts");
     const plan = join(sandcastle, "plan-prompt.md");
     const uiPrompt = join(sandcastle, "roles/ui.md");
@@ -102,7 +103,6 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     const originals = new Map([config, plan, uiPrompt, backend].map((file) => [file, readFileSync(file, "utf8")]));
     const optedIn = originals.get(config)!.replace(/^\/\/ {3}(ui: .*)$/m, "  $1");
     assert.notEqual(optedIn, originals.get(config), "the Seed's repo-config.mts has no commented ui entry");
-    const bullet = "\n- `ui`: the issue adds or changes Blazor components or pages. Leave it out when the issue changes no markup.\n";
     const run = () =>
       spawnSync(join(root, "node_modules/.bin/tsx"), ["--test", "--test-reporter=spec", ".sandcastle/lib/config.test.mts"], { cwd: scratch, encoding: "utf8", env: childEnv() });
     // The check's own failure line, not just its name, which the reporter prints whether the test passed or not. The spec reporter is
@@ -112,12 +112,18 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     try {
       writeFileSync(config, optedIn);
 
-      const withoutBullet = run();
-      assert.notEqual(withoutBullet.status, 0, "the check should fail without the planner's ui bullet");
-      assert.match(withoutBullet.stdout, failedCheck);
-      assert.match(withoutBullet.stdout, /plan-prompt|\^- `ui`/);
+      const complete = run();
+      assert.equal(complete.status, 0, `${complete.stdout}${complete.stderr}`);
+      assert.match(complete.stdout, /✔[^\n]*has the prompts the ui role needs/, "the check should run and pass, not be skipped");
 
-      writeFileSync(plan, `${originals.get(plan)}${bullet}`);
+      assert.ok(originals.get(plan)!.includes("{{UI_ROLE}}"), "the Template's plan-prompt.md has no {{UI_ROLE}}");
+      writeFileSync(plan, originals.get(plan)!.replace("{{UI_ROLE}}", ""));
+      const withoutSlot = run();
+      assert.notEqual(withoutSlot.status, 0, "the check should fail without the planner's {{UI_ROLE}}");
+      assert.match(withoutSlot.stdout, failedCheck);
+      assert.match(withoutSlot.stdout, /UI_ROLE/);
+
+      writeFileSync(plan, originals.get(plan)!);
       rmSync(uiPrompt);
       const withoutPrompt = run();
       assert.notEqual(withoutPrompt.status, 0, "the check should fail without roles/ui.md");
@@ -125,10 +131,6 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
       assert.match(withoutPrompt.stdout, /roles\/ui\.md is missing/);
 
       writeFileSync(uiPrompt, originals.get(uiPrompt)!);
-      const complete = run();
-      assert.equal(complete.status, 0, `${complete.stdout}${complete.stderr}`);
-      assert.match(complete.stdout, /✔[^\n]*has the prompts the ui role needs/, "the check should run and pass, not be skipped");
-
       writeFileSync(backend, originals.get(backend)!.replace("{{UI_DEVELOPER}}", ""));
       const withoutPlaceholder = run();
       assert.notEqual(withoutPlaceholder.status, 0, "the check should fail when backend.md drops {{UI_DEVELOPER}}");
@@ -139,14 +141,15 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     }
   });
 
-  // skills.test.mts checks the role prompts against SANDBOX_SKILLS, which is empty under the Seed's values and so passes without
-  // checking anything. Here a skill is mounted, to show it fails when a prompt lacks it or lists one that isn't mounted.
-  it("fails skills.test.mts when a role prompt and SANDBOX_SKILLS disagree, and passes when they agree", { timeout: 120_000 }, () => {
+  // skills.test.mts checks roles/skills.md against SANDBOX_SKILLS, which is empty under the Seed's values and so passes without
+  // checking anything. Here a skill is mounted, to show it fails when the file lacks it or lists one that isn't mounted, and when a
+  // prompt that should receive the file as {{REPO_SKILLS}} lacks the placeholder.
+  it("fails skills.test.mts when roles/skills.md and SANDBOX_SKILLS disagree or a prompt lacks {{REPO_SKILLS}}, and passes when they agree", { timeout: 120_000 }, () => {
     const config = join(sandcastle, "lib/repo-config.mts");
+    const skillsFile = join(sandcastle, "roles/skills.md");
     const tester = join(sandcastle, "roles/tester.md");
-    const backend = join(sandcastle, "roles/backend.md");
     const uiPrompt = join(sandcastle, "roles/ui.md");
-    const originals = new Map([config, tester, backend, uiPrompt].map((file) => [file, readFileSync(file, "utf8")]));
+    const originals = new Map([config, skillsFile, tester, uiPrompt].map((file) => [file, readFileSync(file, "utf8")]));
     const mounted = originals.get(config)!.replace(/^(export const SANDBOX_SKILLS: readonly string\[\] = )\[\];$/m, '$1["dotnet-tdd"];');
     assert.notEqual(mounted, originals.get(config), "the Seed's repo-config.mts has no empty SANDBOX_SKILLS");
     // The ui prompt is checked only in a repo that opted into the role.
@@ -162,27 +165,59 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
 
     try {
       writeFileSync(config, optedIn);
+      assert.equal(originals.get(skillsFile), "", "the Seed's roles/skills.md should be empty");
 
       const unlisted = run();
-      assert.notEqual(unlisted.status, 0, "the check should fail when the prompts omit a mounted skill");
-      assert.match(unlisted.stdout, /✖[^\n]*lists every mounted skill in the tester prompt/);
+      assert.notEqual(unlisted.status, 0, "the check should fail when roles/skills.md omits a mounted skill");
+      assert.match(unlisted.stdout, /✖[^\n]*lists every mounted skill in roles\/skills\.md/);
 
-      for (const file of [tester, backend]) writeFileSync(file, `${originals.get(file)}${section("dotnet-tdd")}`);
-      const uiUnlisted = run();
-      assert.notEqual(uiUnlisted.status, 0, "the check should fail when the ui prompt omits a mounted skill");
-      assert.match(uiUnlisted.stdout, /✖[^\n]*lists every mounted skill in the ui prompt/);
-
-      writeFileSync(uiPrompt, `${originals.get(uiPrompt)}${section("dotnet-tdd")}`);
+      writeFileSync(skillsFile, section("dotnet-tdd"));
       const agreeing = run();
       assert.equal(agreeing.status, 0, `${agreeing.stdout}${agreeing.stderr}`);
       assert.match(agreeing.stdout, /skipped 0/, "the ui prompt's check should run, not be skipped");
 
-      writeFileSync(tester, `${originals.get(tester)}${section("dotnet-tdd", "dotnet-nope")}`);
+      writeFileSync(skillsFile, section("dotnet-tdd", "dotnet-nope"));
       const unmounted = run();
-      assert.notEqual(unmounted.status, 0, "the check should fail when a prompt lists a skill that isn't mounted");
-      assert.match(unmounted.stdout, /✖[^\n]*lists no skill that SANDBOX_SKILLS doesn't mount/);
+      assert.notEqual(unmounted.status, 0, "the check should fail when roles/skills.md lists a skill that isn't mounted");
+      assert.match(unmounted.stdout, /✖[^\n]*lists no skill that SANDBOX_SKILLS doesn't mount, in roles\/skills\.md/);
+
+      writeFileSync(skillsFile, section("dotnet-tdd"));
+      writeFileSync(tester, originals.get(tester)!.replace("{{REPO_SKILLS}}", ""));
+      const testerWithout = run();
+      assert.notEqual(testerWithout.status, 0, "the check should fail when the tester prompt lacks {{REPO_SKILLS}}");
+      assert.match(testerWithout.stdout, /✖[^\n]*puts \{\{REPO_SKILLS\}\} in the tester prompt/);
+
+      writeFileSync(tester, originals.get(tester)!);
+      writeFileSync(uiPrompt, originals.get(uiPrompt)!.replace("{{REPO_SKILLS}}", ""));
+      const uiWithout = run();
+      assert.notEqual(uiWithout.status, 0, "the check should fail when the ui prompt lacks {{REPO_SKILLS}}");
+      assert.match(uiWithout.stdout, /✖[^\n]*puts \{\{REPO_SKILLS\}\} in the ui prompt/);
+
+      writeFileSync(uiPrompt, originals.get(uiPrompt)!);
+      writeFileSync(tester, `${originals.get(tester)}${section("dotnet-tdd")}`);
+      const inline = run();
+      assert.notEqual(inline.status, 0, "the check should fail when a role prompt keeps its own # SKILLS section");
+      assert.match(inline.stdout, /✖[^\n]*leaves no # SKILLS section inline/);
     } finally {
       for (const [file, text] of originals) writeFileSync(file, text);
+    }
+  });
+
+  // agents.test.mts compares REPO_SKILLS with the file under the Seed's empty roles/skills.md, which can't show the text is passed whole and
+  // trimmed. Here the file has text with blank lines around it.
+  it("passes agents.test.mts with a roles/skills.md that has text and blank lines around it", { timeout: 120_000 }, () => {
+    const skillsFile = join(sandcastle, "roles/skills.md");
+    const original = readFileSync(skillsFile, "utf8");
+    const run = () =>
+      spawnSync(join(root, "node_modules/.bin/tsx"), ["--test", "--test-reporter=spec", ".sandcastle/lib/agents.test.mts"], { cwd: scratch, encoding: "utf8", env: childEnv() });
+
+    try {
+      writeFileSync(skillsFile, "\n\n# SKILLS\n\n- `dotnet-tdd`: when to use it\n\n\n");
+      const withText = run();
+      assert.equal(withText.status, 0, `${withText.stdout}${withText.stderr}`);
+      assert.match(withText.stdout, /✔[^\n]*adds roles\/skills\.md's text as REPO_SKILLS, trimmed/);
+    } finally {
+      writeFileSync(skillsFile, original);
     }
   });
 
@@ -493,5 +528,63 @@ describe("the docs on the reviewers as parallel subagents of one lead session", 
       assert.match(header, /Agent` tool limited to the round's lens-<id> agents \(leadTools\)/, fileURLToPath(file));
       assert.doesNotMatch(header, /The lead holds Agent, Read, Grep and Glob/, fileURLToPath(file));
     }
+  });
+});
+
+// mpaulosky/dotfiles#392: the role prompts are Owned, so a repo's own content has to be moved into roles/shared-rules.md and roles/skills.md
+// before an Apply overwrites them. The docs say so, and the records of the decision agree.
+describe("the docs of the Owned role prompts (mpaulosky/dotfiles#392)", () => {
+  const reference = readFileSync(join(skill, "references/sandcastle.md"), "utf8");
+  const migrating = reference.slice(reference.indexOf("## Migrating a repo"));
+  const adr = (name: string) => readFileSync(join(skill, "docs/adr", name), "utf8");
+
+  it("names roles/skills.md and the {{REPO_SKILLS}} and {{UI_ROLE}} placeholders the host fills in", () => {
+    assert.match(reference, /roles\/skills\.md/);
+    assert.match(reference, /\{\{REPO_SKILLS\}\}/);
+    assert.match(reference, /\{\{UI_ROLE\}\}/);
+  });
+
+  it("says in the migration steps that a repo moves its pointers, repo bullets and UI notes to roles/shared-rules.md and its SKILLS block to roles/skills.md before Apply", () => {
+    assert.notEqual(migrating, reference, "the reference has no migration section");
+    assert.match(migrating, /before (?:the )?Apply/i);
+    assert.match(migrating, /roles\/shared-rules\.md/);
+    assert.match(migrating, /roles\/skills\.md/);
+    assert.match(migrating, /docs\/CODING_STANDARDS\.md/);
+    assert.match(migrating, /Blazor-Server/);
+    assert.match(migrating, /auth0-management-app/);
+  });
+
+  it("lists the nine prompts as Owned and roles/shared-rules.md and roles/skills.md as Seed, in the reference's tables", () => {
+    const ownedTable = /\n## Owned files\n([\s\S]*?)\n## /.exec(reference)?.[1] ?? "";
+    const seedTable = /\n## Seed files\n([\s\S]*?)\n## /.exec(reference)?.[1] ?? "";
+
+    assert.ok(ownedTable.length > 0 && seedTable.length > 0, "the reference's Owned and Seed tables weren't found");
+    // The Owned table may write the seven role prompts as one row, so each is looked for by name.
+    for (const name of ["plan-prompt.md", "review-prompt.md", "architect", "backend", "tester", "follow-up", "gate-fixer", "scribe", "ui"]) {
+      assert.ok(ownedTable.includes(name), `${name} isn't in the Owned table`);
+    }
+    for (const file of ["plan-prompt.md", "review-prompt.md"]) assert.ok(!seedTable.includes(file), `${file} is still in the Seed table`);
+    assert.doesNotMatch(seedTable, /roles\/\*\.md/, "the Seed table still lists the role prompts");
+    assert.match(seedTable, /roles\/shared-rules\.md/);
+    assert.match(seedTable, /roles\/skills\.md/);
+  });
+
+  it("amends ADR 0006: Owned prompts, Seed shared-rules.md and skills.md, and the rejected option of keeping them Seed", () => {
+    const text = adr("0006-sandcastle-section-of-the-template.md");
+
+    assert.match(text, /Amended by mpaulosky\/dotfiles#392/);
+    assert.match(text, /roles\/skills\.md/);
+    assert.match(text, /Keeping the role prompts Seed/);
+  });
+
+  it("says in ADR 0007 that roles/ui.md is Owned", () => {
+    assert.match(adr("0007-sandcastle-code-is-owned-with-a-seed-repo-config.md"), /`roles\/ui\.md` is Owned/);
+  });
+
+  it("names the prompts among the files a re-Apply reviews, in references/pre-push-review.md", () => {
+    const text = readFileSync(join(skill, "references/pre-push-review.md"), "utf8");
+
+    assert.match(text, /REVIEWED_ON_REAPPLY[\s\S]*?plan-prompt\.md/);
+    assert.match(text, /REVIEWED_ON_REAPPLY[\s\S]*?review-prompt\.md/);
   });
 });

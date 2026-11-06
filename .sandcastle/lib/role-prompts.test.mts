@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { uiEnabled } from "./agents.mts";
 import { backendPromptArgs } from "./prompts.mts";
 
 const sandcastleFile = (path: string) => new URL(`../${path}`, import.meta.url);
@@ -34,23 +35,51 @@ describe("developer roles across stacks", () => {
     assert.match(rules, /pnpm exec tsx --test/);
   });
 
+  // mpaulosky/dotfiles#392: the role prompts are the Template's Owned files and name no repo, so what they held about dotfiles is in its
+  // shared rules, which every role reads.
   it("tells the developers to keep dotfiles' copies of Owned files in step with the Template", () => {
-    assert.match(read("roles/shared-rules.md"), /copy it over the root copy/);
-    assert.match(read("roles/backend.md"), /copy the Template's file over the copy/);
+    const rules = read("roles/shared-rules.md");
+
+    assert.match(rules, /copy it over the root copy/);
+    assert.match(rules, /copy the Template's file over the copy before you finish/);
   });
 
-  it("tells the tester how to stub and where to put tests in each stack", () => {
+  it("tells the roles where tests go in each stack", () => {
+    const rules = read("roles/shared-rules.md");
+
+    assert.match(rules, /pr-automerge\.test\.mjs/);
+    assert.match(rules, /<name>\.test\.sh/);
+  });
+
+  it("tells the tester how to stub in each stack, in its own prompt", () => {
     const prompt = read("roles/tester.md");
 
-    assert.match(prompt, /pr-automerge\.test\.mjs/);
     assert.match(prompt, /throw new Error\("Not implemented"\)/);
     assert.match(prompt, /<module>\.test\.mts/);
   });
 
-  it("points the tester and backend at the Sandcastle rule for TypeScript work", () => {
-    for (const role of ["tester", "backend"]) {
-      assert.match(read(`roles/${role}.md`), /\.claude\/rules\/sandcastle\.md/, role);
+  it("points the roles at the Sandcastle rule for TypeScript work through the shared rules", () => {
+    assert.match(read("roles/shared-rules.md"), /\.claude\/rules\/sandcastle\.md/);
+  });
+
+  it("gives the roles dotfiles' reading list, the PR description pointer and the follow-up and scribe rules in the shared rules", () => {
+    const rules = read("roles/shared-rules.md");
+
+    for (const pointer of ["CONTEXT.md", "SKILL.md", "references/", "docs/adr/", "references/pr-process.md"]) {
+      assert.ok(rules.includes(pointer), `the shared rules don't name ${pointer}`);
     }
+    // The follow-up rule: a Template workflow fix goes in the Template's copy, and the four workflows with a root copy get the same change.
+    assert.match(rules, /follow-up/i);
+    assert.match(rules, /root copy/);
+    // The scribe's targets, and that Markdown inside the Template's folders is the developer's.
+    assert.match(rules, /scribe/i);
+    assert.ok(rules.includes("template/owned/") && rules.includes("template/seed/"), "the shared rules don't name the Template's folders");
+    assert.match(rules, /release-generated|no release/i);
+    // The planner lists both a Template file and its root copy.
+    assert.match(rules, /planner/i);
+    assert.match(rules, /`files`/);
+    // test.sh counts FAIL: lines, and the Sandcastle check runs only after it passes.
+    assert.match(rules, /FAIL:/);
   });
 
   it("names every node:test, pytest and test-script way to skip or todo a test as weakening it", () => {
@@ -121,15 +150,21 @@ describe("secret-shaped test fixtures", () => {
 // Issue #72: the optional roles the planner picks, and the design note the
 // architect passes to the roles after it.
 describe("optional role prompts", () => {
-  it("asks the planner for a roles field naming architect and scribe, and no UI developer", () => {
+  it("asks the planner for a roles field naming architect and scribe, with the ui bullet left to {{UI_ROLE}} (dotfiles has no UI role)", () => {
     const prompt = read("plan-prompt.md");
 
     assert.match(prompt, /"roles": \[/);
     for (const role of ["architect", "scribe"]) {
       assert.match(prompt, new RegExp(`^- \`${role}\`:`, "m"), role);
     }
+    assert.match(prompt, /^\{\{UI_ROLE\}\}$/m);
     assert.doesNotMatch(prompt, /^- `ui`:/m);
-    assert.equal(existsSync(sandcastleFile("roles/ui.md")), false);
+  });
+
+  // mpaulosky/dotfiles#392: roles/ui.md is Owned and opt-in, so every repo has the file and the role stays inert until ROLE_AGENTS has a `ui` entry.
+  it("carries roles/ui.md, which is inert here because dotfiles' ROLE_AGENTS has no ui entry", async () => {
+    assert.ok(existsSync(sandcastleFile("roles/ui.md")), "roles/ui.md is missing: it is an Owned copy in every repo");
+    assert.equal(uiEnabled(), false);
   });
 
   it("has the architect write its design note to .sandcastle/work/{n}/design.md, with its earlier note as input", () => {
@@ -151,14 +186,16 @@ describe("optional role prompts", () => {
     assert.match(String(backendPromptArgs({ number: 1, title: "t", body: "", labels: [], comments: [] }, "b", false).UI_DEVELOPER), /last developer run/);
   });
 
-  it("keeps the scribe off release-generated files, ADRs and the Template's own Markdown", () => {
+  it("keeps the scribe off release-generated files and ADRs, and sends it to the shared rules for anything the repo says belongs elsewhere", () => {
     const prompt = read("roles/scribe.md");
 
-    for (const path of ["docs/blogs/", "docs/README.md", "docs/index.html", "docs/adr/", "template/owned/"]) {
+    for (const path of ["docs/blogs/", "docs/README.md", "docs/index.html", "docs/adr/"]) {
       assert.ok(prompt.includes(`\`${path}\``), path);
     }
     assert.match(prompt, /commit nothing/i);
     assert.match(prompt, /markdownlint-cli2/);
+    assert.match(prompt, /anything the shared rules say belongs elsewhere/);
+    assert.ok(!prompt.includes("template/owned/"), "the Template's folders are dotfiles' own, so they belong in the shared rules");
   });
 });
 
@@ -291,7 +328,8 @@ describe("every prompt", () => {
 
 // #280: the Template's Seed prompts are dotfiles' prompts rewritten for any repo. Sandcastle (lib/prompts.mts) fills the {{NAME}}s at
 // run time, so a rewrite that drops one leaves a value unused, or an agent without what it needs. Apply fills {{OWNER}}, {{REPO}}
-// and {{SOLUTION}} itself, so those three aren't compared.
+// and {{SOLUTION}} itself, so those three aren't compared. mpaulosky/dotfiles#392 made the role prompts Owned, which test.sh compares byte for
+// byte with dotfiles' copies, so only the repo's own two files are left here.
 describe("the Template's Seed prompts", () => {
   const seedSandcastle = new URL(
     "../../Support For New Projects/.claude/skills/repo-ci-baseline/template/seed/.sandcastle/",
@@ -302,13 +340,8 @@ describe("the Template's Seed prompts", () => {
     const names = new Set([...text.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((match) => match[1]!));
     return [...names].filter((name) => !applyPlaceholders.has(name)).sort();
   };
-  const prompts = [
-    "plan-prompt.md",
-    "review-prompt.md",
-    ...["architect", "backend", "tester", "scribe", "gate-fixer", "follow-up", "shared-rules"].map((role) => `roles/${role}.md`),
-  ];
 
-  for (const prompt of prompts) {
+  for (const prompt of ["roles/shared-rules.md", "roles/skills.md"]) {
     it(`${prompt} has the Sandcastle placeholders dotfiles' copy has`, () => {
       const seed = new URL(prompt, seedSandcastle);
 
@@ -317,13 +350,143 @@ describe("the Template's Seed prompts", () => {
     });
   }
 
-  // dotfiles doesn't opt into the UI developer, so it has no roles/ui.md of its own to compare with: the Seed's carries the
-  // placeholders lib/prompts.mts#issuePromptArgs and withSharedRules fill, and no other.
-  it("roles/ui.md is in the Seed with the placeholders every developer role gets", () => {
-    const seed = new URL("roles/ui.md", seedSandcastle);
+  it("keeps none of the nine Owned prompts", () => {
+    for (const prompt of ["plan-prompt.md", "review-prompt.md", ...["architect", "backend", "tester", "scribe", "gate-fixer", "follow-up", "ui"].map((role) => `roles/${role}.md`)]) {
+      assert.equal(existsSync(new URL(prompt, seedSandcastle)), false, `the Template's Seed still has .sandcastle/${prompt}`);
+    }
+  });
 
-    assert.ok(existsSync(seed), "the Template's Seed has no .sandcastle/roles/ui.md");
-    assert.deepEqual(placeholders(readFileSync(seed, "utf8")), placeholders(read("roles/tester.md")));
+  it("has an empty roles/skills.md, which a .NET repo fills with its # SKILLS block", () => {
+    const seed = new URL("roles/skills.md", seedSandcastle);
+
+    assert.ok(existsSync(seed), "the Template's Seed has no .sandcastle/roles/skills.md");
+    assert.equal(readFileSync(seed).length, 0);
+  });
+
+  it("points every role at what a repo adds, in roles/shared-rules.md: CONTEXT.md and .claude/rules/ where present, and the UI developer's files", () => {
+    const rules = readFileSync(new URL("roles/shared-rules.md", seedSandcastle), "utf8");
+
+    assert.match(rules, /CONTEXT\.md/);
+    assert.match(rules, /\.claude\/rules\//);
+    assert.match(rules, /UI developer/);
+  });
+});
+
+// mpaulosky/dotfiles#392: the nine prompts that instruct the pipeline's roles are the Template's Owned files, read in every repo, so they hold
+// no repo's text: a repo's content goes in roles/shared-rules.md and roles/skills.md.
+describe("the Template's Owned prompts", () => {
+  const ownedSandcastle = new URL(
+    "../../Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/.sandcastle/",
+    import.meta.url,
+  );
+  const owned = (path: string) => {
+    const file = new URL(path, ownedSandcastle);
+    assert.ok(existsSync(file), `the Template's Owned folder has no .sandcastle/${path}`);
+    return readFileSync(file, "utf8");
+  };
+  const rolePrompts = ["architect", "backend", "tester", "follow-up", "gate-fixer", "scribe", "ui"].map((role) => `roles/${role}.md`);
+  const prompts = ["plan-prompt.md", "review-prompt.md", ...rolePrompts];
+
+  for (const prompt of prompts) {
+    it(`${prompt} holds no repo's name, stack or issue number`, () => {
+      const text = owned(prompt);
+
+      assert.doesNotMatch(text, /\{\{(OWNER|REPO|SOLUTION)\}\}/, "Apply would fill it, and an Owned file is overwritten");
+      assert.doesNotMatch(text, /Blazor|\.razor|bUnit|dotnet|\.slnx/);
+      assert.doesNotMatch(text, /(?<![\w/])#\d+\b/, "a bare #N reads as the repo's own issue");
+    });
+  }
+
+  for (const prompt of ["plan-prompt.md", "review-prompt.md", "roles/architect.md", "roles/tester.md", "roles/backend.md", "roles/ui.md"]) {
+    it(`${prompt} points at CLAUDE.md, docs/adr/, the coding standards and whatever else the rules below point to`, () => {
+      const text = owned(prompt);
+
+      assert.match(text, /`CLAUDE\.md`/);
+      assert.match(text, /\.sandcastle\/CODING_STANDARDS\.md/);
+      if (prompt !== "plan-prompt.md" && prompt !== "review-prompt.md") {
+        assert.match(text, /`docs\/adr\/`/);
+        assert.match(text, /whatever else the rules below point to/);
+      }
+    });
+  }
+
+  for (const role of ["architect", "backend", "tester", "follow-up", "gate-fixer", "scribe", "ui"]) {
+    it(`roles/${role}.md gets the shared rules`, () => {
+      assert.match(owned(`roles/${role}.md`), /\{\{SHARED_RULES\}\}/);
+    });
+  }
+
+  it("gives the planner and the reviewer the shared rules too", () => {
+    for (const prompt of ["plan-prompt.md", "review-prompt.md"]) assert.match(owned(prompt), /\{\{SHARED_RULES\}\}/, prompt);
+  });
+
+  for (const role of ["tester", "backend", "ui"]) {
+    it(`roles/${role}.md has {{REPO_SKILLS}} on a line of its own before its # EXECUTION section`, () => {
+      const text = owned(`roles/${role}.md`);
+      const at = text.search(/^\{\{REPO_SKILLS\}\}$/m);
+
+      assert.notEqual(at, -1);
+      assert.ok(at < text.indexOf("\n# EXECUTION"), "it goes before # EXECUTION, where the # SKILLS block sat");
+      assert.doesNotMatch(text, /^# SKILLS\s*$/m);
+    });
+  }
+
+  it("names the developer, not the backend developer, in roles/ui.md, which also calls itself the UI developer", () => {
+    const text = owned("roles/ui.md");
+
+    assert.match(text, /the developer/);
+    assert.match(text, /UI developer/);
+    assert.doesNotMatch(text, /backend developer/);
+  });
+
+  it("asks the planner for {{UI_ROLE}} on a line of its own between the architect and scribe bullets, with no static ui bullet", () => {
+    const text = owned("plan-prompt.md");
+    const architect = text.search(/^- `architect`:/m);
+    const slot = text.search(/^\{\{UI_ROLE\}\}$/m);
+    const scribe = text.search(/^- `scribe`:/m);
+
+    assert.ok(architect !== -1 && slot !== -1 && scribe !== -1);
+    assert.ok(architect < slot && slot < scribe, "{{UI_ROLE}} goes between the architect and scribe bullets");
+    assert.doesNotMatch(text, /^- `ui`:/m);
+    assert.match(text, /"roles": \[/);
+    assert.equal(text.match(/"files": \[/g)?.length, 2, "the example plan keeps two picks, each with files");
+  });
+
+  it("tells the tester to build with the build commands in the shared rules, and still shows the stubs for C#, TypeScript and shell or Python", () => {
+    const text = owned("roles/tester.md");
+
+    assert.match(text, /build commands in the rules below/);
+    assert.match(text, /throw new Error\("Not implemented"\)/);
+    assert.match(text, /<module>\.test\.mts/);
+    assert.match(text, /C#/);
+  });
+
+  it("keeps the full skip and todo list in the backend and gate-fixer prompts", () => {
+    for (const role of ["backend", "gate-fixer"]) {
+      const text = owned(`roles/${role}.md`);
+
+      for (const form of ["`.skip`", "`.todo`", "`xfail`", "`pytest.skip()`", "`exit 0`"]) assert.ok(text.includes(form), `${role} doesn't name ${form}`);
+    }
+  });
+
+  it("leaves the Template's own files to the shared rules in the backend, follow-up, scribe and architect prompts", () => {
+    assert.doesNotMatch(owned("roles/backend.md"), /copy the Template's file over the copy/);
+    const followUp = owned("roles/follow-up.md");
+    assert.match(followUp, /only as the shared rules say/);
+    assert.match(followUp, /out of scope/);
+    assert.match(followUp, /can't push a workflow change/);
+    const scribe = owned("roles/scribe.md");
+    assert.match(scribe, /anything the shared rules say belongs elsewhere/);
+    assert.doesNotMatch(scribe, /template\/owned\//);
+    assert.match(owned("roles/architect.md"), /anything the shared rules say about copies of a file/);
+    assert.match(owned("roles/gate-fixer.md"), /one at a time/);
+  });
+
+  it("follows docs/PROCESS.md in the review prompt only where the repo has one", () => {
+    const text = owned("review-prompt.md");
+
+    assert.match(text, /docs\/PROCESS\.md/);
+    assert.match(text, /where the repo has one/);
   });
 });
 

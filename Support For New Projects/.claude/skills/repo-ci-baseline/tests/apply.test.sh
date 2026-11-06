@@ -235,6 +235,33 @@ out="$("$apply" "$repo")"
 check "sandcastle, own hand-off guidance: overwritten" 'grep -qx "# Hand a pull request off to Sandcastle" "$repo/.claude/rules/sandcastle-hand-off.md"'
 check "sandcastle, own hand-off guidance: reported as a changed Owned file" 'grep -q "sandcastle-hand-off.md" <<< "$out" && ! grep -A3 "Seed files skipped" <<< "$out" | grep -q "sandcastle-hand-off.md"'
 
+# The role prompts are Owned and the repo's own skills file is Seed (mpaulosky/dotfiles#392): a re-Apply overwrites a changed prompt, writes
+# roles/skills.md when the repo has none, and leaves a roles/skills.md the repo filled alone.
+mkdir -p "$skill/template/owned/.sandcastle/roles"
+printf '# generic backend developer for issue {{TASK_ID}}\n' > "$skill/template/owned/.sandcastle/roles/backend.md"
+: > "$skill/template/seed/.sandcastle/roles/skills.md"
+repo="$work/sandcastle role prompts"
+new_repo "$repo"
+mkdir -p "$repo/.sandcastle/roles"
+printf '# our own backend prompt, with the Widget pointers\n' > "$repo/.sandcastle/roles/backend.md"
+printf '# SKILLS\n\n- `dotnet-tdd`: our own block\n' > "$repo/.sandcastle/roles/skills.md"
+commit_all "$repo" "init"
+git_q -C "$repo" switch -q -c chore/standardize-baseline
+out="$("$apply" "$repo")"
+check "role prompts: a changed Owned prompt is overwritten with the Template's" 'grep -qx "# generic backend developer for issue {{TASK_ID}}" "$repo/.sandcastle/roles/backend.md"'
+check "role prompts: the overwrite is reported" 'grep -q "roles/backend.md" <<< "$out"'
+check "role prompts: the repo's own roles/skills.md is left alone" '[[ "$(cat "$repo/.sandcastle/roles/skills.md")" == "$(printf "# SKILLS\n\n- \`dotnet-tdd\`: our own block")" ]]'
+repo="$work/sandcastle role prompts new"
+new_repo "$repo"
+mkdir -p "$repo/.sandcastle"
+printf 'x\n' > "$repo/.sandcastle/.gitkeep"
+commit_all "$repo" "init"
+git_q -C "$repo" switch -q -c chore/standardize-baseline
+"$apply" "$repo" >/dev/null
+check "role prompts: a repo without roles/skills.md gets the Seed's, empty" '[[ -f "$repo/.sandcastle/roles/skills.md" && ! -s "$repo/.sandcastle/roles/skills.md" ]]'
+check "role prompts: a repo without roles/backend.md gets the Owned one" '[[ -f "$repo/.sandcastle/roles/backend.md" ]]'
+command rm -rf "$skill/template/owned/.sandcastle/roles" "$skill/template/seed/.sandcastle/roles/skills.md"
+
 # The ledger imports REPO_SLUG and NOT_OWNED_BASELINE_PATHS from the repo's own repo-config.mts (Seed, never
 # rewritten), and Sandcastle's build.mts imports the ledger: a repo whose copy lacks them is refused, with nothing written.
 ledger_files=(scripts/review.sh .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts .sandcastle/lib/pre-push-review-skill.test.mts)

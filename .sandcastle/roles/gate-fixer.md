@@ -42,8 +42,7 @@ This is checkpoint {{CHECKPOINT}}.
 
 At either checkpoint, never weaken, skip or delete a test to make the gate pass. Don't loosen an assertion, skip or todo a test in any form
 (`node:test`'s `.skip`, `.todo`, `{ skip }`, `{ todo }`, `t.skip()` or `t.todo()`; xUnit's `Skip =` or `Assert.Skip()`;
-pytest's `skip`, `skipif` or `xfail` marks, or `pytest.skip()`; an early `exit 0` or
-`return` in a `.test.sh`),
+pytest's `skip`, `skipif` or `xfail` marks, or `pytest.skip()`; an early `exit 0` or `return` in a `.test.sh`),
 comment a test out, raise a lint limit, or disable a rule.
 When a test is wrong rather than the code, say so in your commit body instead of changing what it checks.
 

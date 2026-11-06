@@ -177,14 +177,15 @@ would hand your GitHub token to the agents. Blazor-Server's `main.mts` refuses t
 
 ### 6. Adapt the prompts
 
-The prompts are Owned and read the same in every repo, so put the repo's own text in `.sandcastle/roles/shared-rules.md` (every role reads it) and `.sandcastle/roles/skills.md` (the skills block
-the tester, developer and UI developer read) instead of editing `plan-prompt.md`, `review-prompt.md` or a role's prompt. The Owned prompts already tell the implementer not to push,
-open a pull request or close the issue (the host does that), and the host drops issues whose branch has an open pull request before the planner sees them. In `roles/shared-rules.md`:
+The prompts are Owned and read the same in every repo, so put the repo's own text in `.sandcastle/roles/shared-rules.md` (every role reads it) and `.sandcastle/roles/skills.md` (the skills block the tester,
+developer and UI developer read) instead of editing `plan-prompt.md`, `review-prompt.md` or a role's prompt. The Seed `roles/shared-rules.md` already tells every role never to push, run `gh` or write
+to GitHub (the host does that); keep that rule when you write your own. The host drops issues whose branch has an open pull request before the planner sees them.
+In `roles/shared-rules.md`:
 
 - Use the repo's build and test commands (`dotnet build <Solution>.slnx`, the test projects) instead of `npm`.
 - Point the agents at `CONTEXT.md`, `docs/adr/` and the coding standards, and have them work test-first.
 - Use the repo's commit format, `<type>(<scope>): <Summary>` with `Refs #<id>`.
-- Copy any skills the agents need into the repo's `.claude/skills/`. The sandbox can't see `~/.claude/skills`.
+- Copy any skills the agents need into the repo's `.claude/skills/`, and list them in `roles/skills.md`. The sandbox can't see `~/.claude/skills`.
 
 ### 7. Adapt the orchestration
 

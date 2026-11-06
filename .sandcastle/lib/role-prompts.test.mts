@@ -607,6 +607,9 @@ describe("the docs about the Owned prompts", () => {
     assert.doesNotMatch(text, /Adapt those two as in step 6/);
     assert.match(text, /`critique-prompt\.md` and the role prompts are Owned and used as they are/);
     assert.doesNotMatch(text, /Tell the implementer not to push/);
+    assert.doesNotMatch(text, /The Owned prompts already tell the implementer not to push/, "no Owned prompt says it: the Seed roles/shared-rules.md does");
+    assert.match(text, /The Seed `roles\/shared-rules\.md` already tells every role never to push, run `gh` or write to GitHub/);
+    assert.match(text, /list them in `roles\/skills\.md`/);
     assert.doesNotMatch(text, /Have the planner skip issues whose branch already has an open pull request/);
   });
 

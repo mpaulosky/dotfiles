@@ -80,6 +80,15 @@ export const OWNED_PATHS = [
   ".sandcastle/lib/*.mts",
   ".sandcastle/critique-prompt.md",
   ".sandcastle/intake-prompt.md",
+  ".sandcastle/plan-prompt.md",
+  ".sandcastle/review-prompt.md",
+  ".sandcastle/roles/architect.md",
+  ".sandcastle/roles/backend.md",
+  ".sandcastle/roles/tester.md",
+  ".sandcastle/roles/follow-up.md",
+  ".sandcastle/roles/gate-fixer.md",
+  ".sandcastle/roles/scribe.md",
+  ".sandcastle/roles/ui.md",
   ".sandcastle/tsconfig.json",
   ".sandcastle/.env.example",
   ".sandcastle/.gitignore",
@@ -117,7 +126,7 @@ export const OWNED_PATHS = [
 // templates, whose front matter sets the labels and assignee of every issue
 // opened from them (a `Sandcastle` label would feed the unattended pipeline),
 // the reviewer agent, whose `tools:` front matter is what keeps reviewers
-// read-only, the two prompts that instruct the pipeline's judging roles, the
+// read-only, the prompts that instruct the pipeline's roles, the
 // local gate's .sandcastle/check.sh, whose watched paths and early exit decide
 // whether the Sandcastle check runs at all, and global.json, which sets the SDK and the msbuild-sdks a build runs.
 // The other files that moved from Seed to Owned (LICENSE, CODE_OF_CONDUCT.md,
@@ -134,6 +143,15 @@ export const REVIEWED_ON_REAPPLY: ReadonlySet<string> = new Set([
   ".claude/agents/pre-push-reviewer.md",
   ".sandcastle/critique-prompt.md",
   ".sandcastle/intake-prompt.md",
+  ".sandcastle/plan-prompt.md",
+  ".sandcastle/review-prompt.md",
+  ".sandcastle/roles/architect.md",
+  ".sandcastle/roles/backend.md",
+  ".sandcastle/roles/tester.md",
+  ".sandcastle/roles/follow-up.md",
+  ".sandcastle/roles/gate-fixer.md",
+  ".sandcastle/roles/scribe.md",
+  ".sandcastle/roles/ui.md",
   ".sandcastle/check.sh",
   "global.json",
 ]);

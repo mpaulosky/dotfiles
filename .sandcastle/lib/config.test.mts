@@ -65,12 +65,18 @@ describe("ROLE_AGENTS", () => {
 
     assert.ok(existsSync(file("roles/ui.md")), "roles/ui.md is missing");
     assert.match(readFileSync(file("roles/backend.md"), "utf8"), /\{\{UI_DEVELOPER\}\}/);
-    assert.match(readFileSync(file("plan-prompt.md"), "utf8"), /^- `ui`:/m);
+    assert.match(readFileSync(file("plan-prompt.md"), "utf8"), /\{\{UI_ROLE\}\}/, "plan-prompt.md is missing {{UI_ROLE}}, where the host puts the planner's ui bullet");
+    // The planner's bullet, backend.md and roles/ui.md all send the reader to the shared rules for which files are the UI developer's. The file is
+    // the repo's own Seed, so only the section's heading is checked, not its wording.
+    assert.match(
+      readFileSync(file("roles/shared-rules.md"), "utf8"),
+      /^#{1,6}\s+UI developer\s*$/m,
+      'roles/shared-rules.md has no "## UI developer" section: add one that names the UI files, or the developer and the ui role each leave them to the other',
+    );
   });
 });
 
-// The Seed review-prompt.md is never overwritten, so a repo whose copy lacks the placeholder never tells its reviewer
-// what the host refuses in a PR description.
+// A review-prompt.md without the placeholder never tells its reviewer what the host refuses in a PR description.
 describe("review-prompt.md", () => {
   it("has {{PR_BODY_RULES}} where the PR description's rules go", () => {
     const prompt = readFileSync(new URL("../review-prompt.md", import.meta.url), "utf8");
@@ -78,7 +84,7 @@ describe("review-prompt.md", () => {
     assert.match(
       prompt,
       /\{\{PR_BODY_RULES\}\}/,
-      "add `{{PR_BODY_RULES}}` where the PR description's rules go; the Template's Seed review-prompt.md shows where",
+      "add `{{PR_BODY_RULES}}` where the PR description's rules go; the Template's Owned review-prompt.md shows where",
     );
   });
 });

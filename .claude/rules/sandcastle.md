@@ -14,9 +14,11 @@ files change.
 
 ## Writing the code
 
-- **Change the Template's copy too.** `check.sh`, `main.mts`, `status.mts` and every `lib/` module but `repo-config.mts`, with their tests, are copies of
+- **Change the Template's copy too.** `check.sh`, `main.mts`, `status.mts`, every `lib/` module but `repo-config.mts` (with their tests),
+  `plan-prompt.md`, `review-prompt.md` and the role prompts under `roles/` are copies of
   the Template's Owned files under `template/owned/.sandcastle/`. Change both, or change one and copy it over; `test.sh` fails
-  when they differ. dotfiles' own tests (`repo-config`, `template`, `dockerfile`, `role-prompts` and `owned-paths`, and `main.test.mts`) aren't.
+  when they differ. dotfiles' own tests (`repo-config`, `template`, `dockerfile`, `role-prompts` and `owned-paths`, and `main.test.mts`) aren't,
+  nor are `roles/shared-rules.md` and `roles/skills.md`: dotfiles' text for the roles lives there.
 - **Per-repo values go in `lib/repo-config.mts`,** the Seed file each repo fills. `lib/config.mts` holds only what every
   Sandcastle repo shares and never imports it. An Owned test reads a per-repo value from `repo-config.mts`, or the code
   under test takes it as a parameter, and never pins dotfiles' value.
@@ -81,14 +83,10 @@ guardrails keep agent-written code from running on the host. A change keeps ever
   `protectedRecordMounts`). Every sandbox also sets `GATE_SKIP_REVIEW=1` (`SANDBOX_ENV`): the host runs that review's rounds itself after checkpoint 2
   (`lib/host-review.mts`), recording in the main checkout through `prepareRound` and `recordReview`, never by running the worktree's `scripts/review.sh`. The reviewers
   get Read, Grep and Glob only (`restrictedClaudeCode`), and no agent's prompt names a shell on the ledger, a token or `.git/review`.
-  In the `subagents` reviewer mode (`SANDCASTLE_REVIEWERS`) the `pre-push-review-lead` run holds Read, Grep and Glob and an `Agent(lens-1,lens-2,…)` allowlist of the round's lens agents.
-  `leadTools` builds the list and it is written as the `tools` of the lead's own `--agents` definition, `pre-push-review-lead`, started with `--agent` and no `--tools`
-  (in `--tools` the allowlist would leave the lead no `Agent` tool). `restrictedClaudeCode` enforces it: it refuses a bare `Agent`, any tool beyond Read, Grep and Glob,
-  and a lead whose `denied` lacks any of `LEAD_DENIED_TOOLS` or that lacks `strictMcp` or `userSettingsOnly`.
-  The name `pre-push-review-lead` is reserved, and `LEAD_DENIED_TOOLS` denies every known built-in subagent type and the known tools that run commands, write files, reach the network,
-  load skills or enter worktrees (not `Task` or a bare `Agent`, which may alias the lead's Agent tool) as further layers (a deny list can't name a later release's tool).
-  It starts the reviewers as subagents defined on its command line, which hold Read, Grep and Glob only; the lead holds Agent, Read, Grep and Glob and nothing else:
-  no shell, no network and no write tool, by its definition's tools and those denials. That the lead holds no Bash under `--agent` is still unprobed (`references/pre-push-review.md`).
+  In the `subagents` reviewer mode (`SANDCASTLE_REVIEWERS`) the `pre-push-review-lead` run holds Read, Grep and Glob and an `Agent(lens-1,lens-2,…)` allowlist of the round's lens agents
+  (built by `leadTools`, enforced by `restrictedClaudeCode`,
+  which refuses a bare `Agent`; every known built-in subagent type is also denied as a second layer). It starts the reviewers as subagents defined on its command line,
+  which hold Read, Grep and Glob only; the lead holds Agent, Read, Grep and Glob and nothing else: no shell, no network and no write tool.
 - The sandbox gets no GitHub token (`main.mts` refuses one in `.sandcastle/.env`); the host does every GitHub write.
 - The run report artifact is downloadable by any signed-in user of a public repository and GitHub doesn't mask secrets in it, so it never holds a role's log whole:
   `lib/role-logs.mts` copies only the reviewers' allowlisted view (the last host status lines, the last known tool names without arguments,

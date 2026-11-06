@@ -40,10 +40,12 @@ Here are the last 10 commits:
 
 Explore the repo and fill your context window with relevant information that will allow you to complete the task.
 
-Read the repo-ci-baseline skill's `CONTEXT.md` for the domain language, its `docs/adr/` for recorded decisions and its `references/` page for the part of the Template the issue
-touches (see the rules below), and `.claude/rules/sandcastle.md` for Sandcastle's TypeScript in `.sandcastle/`.
+Read `CLAUDE.md` for how the repo is built and laid out, `docs/adr/` (where present) for recorded decisions, `.sandcastle/CODING_STANDARDS.md` where the repo has one for the code standards, and
+whatever else the rules below point to.
 
 Read the tester's commits on this branch first: their tests are the specification you implement.
+
+{{REPO_SKILLS}}
 
 # EXECUTION
 
@@ -55,7 +57,8 @@ Work test-first (red → green → refactor), one failing test at a time:
 4. REFACTOR with the tests green
 
 Never weaken the tester's tests to make them pass: don't remove or loosen an assertion, skip or todo a test in any form (`node:test`'s `.skip`, `.todo`,
-`{ skip }`, `{ todo }`, `t.skip()` or `t.todo()`; pytest's `skip`, `skipif` or `xfail` marks, or `pytest.skip()`; an early `exit 0` or `return` in a `.test.sh`), comment a
+`{ skip }`, `{ todo }`, `t.skip()` or `t.todo()`; xUnit's `Skip =` or `Assert.Skip()`;
+pytest's `skip`, `skipif` or `xfail` marks, or `pytest.skip()`; an early `exit 0` or `return` in a `.test.sh`), comment a
 test out, or delete one. When a test is wrong rather than the code, leave it as it is and say why in your commit body.
 
 # RULES
@@ -64,8 +67,7 @@ test out, or delete one. When a test is wrong rather than the code, leave it as 
 
 # THE ISSUE
 
-{{UI_DEVELOPER}} When the issue changes an Owned file dotfiles carries a copy of, copy the Template's file over the copy
-before you finish. If the task is not complete, say what was done and what remains in your last commit's body.
+{{UI_DEVELOPER}} If the task is not complete, say what was done and what remains in your last commit's body.
 
 Once complete, output <promise>COMPLETE</promise>.
 

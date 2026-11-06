@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import type * as sandcastle from "@ai-hero/sandcastle";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
@@ -38,6 +41,8 @@ import { limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
 const sharedRules = readFileSync(new URL("../roles/shared-rules.md", import.meta.url), "utf8");
+// roles/skills.md is the repo's own Seed file; withSharedRules passes its text trimmed as {{REPO_SKILLS}}.
+const repoSkills = readFileSync(new URL("../roles/skills.md", import.meta.url), "utf8").trim();
 
 describe("roleOptions", () => {
   it("builds the ui role's options from its ROLE_AGENTS entry, and refuses it when the repo has none", async () => {
@@ -182,7 +187,7 @@ describe("runRoleInSandbox", () => {
 
     await runRoleInSandbox(sandbox, "reviewer", { promptFile: "./review.md", promptArgs: { TASK_ID: "3" } });
 
-    assert.deepEqual(runs[0]!.promptArgs, { TASK_ID: "3", SHARED_RULES: sharedRules });
+    assert.deepEqual(runs[0]!.promptArgs, { TASK_ID: "3", SHARED_RULES: sharedRules, REPO_SKILLS: repoSkills });
   });
 
   // A run must stop cleanly at the time budget or Claude's usage limit,
@@ -296,10 +301,87 @@ describe("isRoleTimeout", () => {
 });
 
 describe("withSharedRules", () => {
-  it("adds the shared rules to a prompt file's arguments", () => {
+  it("adds the shared rules and the repo's skills to a prompt file's arguments", () => {
     const options = withSharedRules({ promptFile: "./plan.md" });
 
-    assert.deepEqual(options.promptArgs, { SHARED_RULES: sharedRules });
+    assert.deepEqual(options.promptArgs, { SHARED_RULES: sharedRules, REPO_SKILLS: repoSkills });
+  });
+
+  it("adds roles/skills.md's text as REPO_SKILLS, trimmed, and the shared rules as they are", () => {
+    const { promptArgs } = withSharedRules({ promptFile: "./plan.md" });
+
+    assert.equal(promptArgs?.REPO_SKILLS, repoSkills);
+    assert.equal(promptArgs?.REPO_SKILLS, String(promptArgs?.REPO_SKILLS).trim());
+    assert.equal(promptArgs?.SHARED_RULES, sharedRules);
+  });
+
+  it("keeps the arguments the caller passed alongside the two it adds", () => {
+    const { promptArgs } = withSharedRules({ promptFile: "./plan.md", promptArgs: { TASK_ID: "7", ISSUES_JSON: "[]" } });
+
+    assert.deepEqual(promptArgs, { TASK_ID: "7", ISSUES_JSON: "[]", SHARED_RULES: sharedRules, REPO_SKILLS: repoSkills });
+  });
+
+  // Sandcastle warns "provided but not referenced" for every argument a prompt doesn't use, so REPO_SKILLS goes only to a prompt that has the placeholder.
+  describe("REPO_SKILLS", () => {
+    const withPrompt = (text: string | undefined, run: (promptFile: string) => void) => {
+      const dir = mkdtempSync(join(tmpdir(), "prompt-"));
+      try {
+        const promptFile = join(dir, "prompt.md");
+        if (text !== undefined) writeFileSync(promptFile, text);
+        run(promptFile);
+      } finally {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+    };
+
+    it("is left out for a prompt that doesn't reference it, so Sandcastle logs no warning", () => {
+      withPrompt("# TASK\n\n{{SHARED_RULES}}\n", (promptFile) => {
+        assert.deepEqual(withSharedRules({ promptFile }).promptArgs, { SHARED_RULES: sharedRules });
+      });
+    });
+
+    it("is passed to a prompt that references it, with or without spaces inside the braces", () => {
+      for (const placeholder of ["{{REPO_SKILLS}}", "{{ REPO_SKILLS }}", "{{\tREPO_SKILLS\n}}"]) {
+        withPrompt(`# TASK\n\n${placeholder}\n\n{{SHARED_RULES}}\n`, (promptFile) => {
+          assert.deepEqual(withSharedRules({ promptFile }).promptArgs, { SHARED_RULES: sharedRules, REPO_SKILLS: repoSkills }, placeholder);
+        });
+      }
+    });
+
+    it("is not matched by a longer name, a lowercase name or one cut short", () => {
+      for (const text of ["{{REPO_SKILLS_X}}", "{{XREPO_SKILLS}}", "{{repo_skills}}", "{REPO_SKILLS}", "{{REPO_SKILLS}", "REPO_SKILLS"]) {
+        withPrompt(text, (promptFile) => {
+          assert.equal(withSharedRules({ promptFile }).promptArgs?.REPO_SKILLS, undefined, text);
+        });
+      }
+    });
+
+    it("is passed when the prompt file can't be read, so Sandcastle reports the missing file rather than a missing argument", () => {
+      withPrompt(undefined, (promptFile) => {
+        assert.equal(withSharedRules({ promptFile }).promptArgs?.REPO_SKILLS, repoSkills);
+      });
+    });
+
+    it("is passed to the prompts that carry the placeholder in the Template, and left off the rest", () => {
+      // fileURLToPath, not .pathname: the Template sits under a folder with spaces, which .pathname leaves as %20.
+      const sandcastle = fileURLToPath(new URL("../", import.meta.url));
+      const has = (file: string) => {
+        const promptFile = join(sandcastle, file);
+        assert.equal(existsSync(promptFile), true, `${file} can't be read: an unreadable prompt is passed REPO_SKILLS, which would hide a wrong path`);
+        return withSharedRules({ promptFile }).promptArgs?.REPO_SKILLS !== undefined;
+      };
+
+      for (const file of ["roles/tester.md", "roles/backend.md", "roles/ui.md"]) assert.equal(has(file), true, file);
+      for (const file of ["roles/architect.md", "roles/scribe.md", "roles/gate-fixer.md", "roles/follow-up.md", "plan-prompt.md", "review-prompt.md", "intake-prompt.md", "critique-prompt.md"]) {
+        assert.equal(has(file), false, file);
+      }
+    });
+
+    it("keeps the argument empty, not undefined, when roles/skills.md holds nothing, since Sandcastle accepts an empty string and refuses undefined", () => {
+      withPrompt("{{REPO_SKILLS}}", (promptFile) => {
+        assert.equal(typeof withSharedRules({ promptFile }).promptArgs?.REPO_SKILLS, "string");
+      });
+    });
   });
 
   it("leaves an inline prompt alone, since Sandcastle rejects arguments for one", () => {

@@ -48,19 +48,19 @@ Here are the last 10 commits:
 
 Explore the repo and fill your context window with relevant information that will allow you to design the change.
 
-Read the repo-ci-baseline skill's `CONTEXT.md` for the domain language, its `docs/adr/` for recorded decisions and its `references/` page for the part of the Template the issue
-touches (see the rules below), and `.claude/rules/sandcastle.md` for Sandcastle's TypeScript in `.sandcastle/`. A design that breaks a recorded decision must say so and why.
+Read `CLAUDE.md` for how the repo is built and laid out, `docs/adr/` (where present) for recorded decisions, `.sandcastle/CODING_STANDARDS.md` where the repo has one for the code standards, and
+whatever else the rules below point to. A design that breaks a recorded decision must say so and why.
 
 # EXECUTION
 
 1. Write the design note to `.sandcastle/work/{{TASK_ID}}/design.md`, creating the folder. It's gitignored, so don't commit it: the host posts it on the issue after your run.
    Keep it short enough to read in a few minutes, and cover:
    - **Functions, steps and outputs**: each new or changed function, workflow step, script option or message, with its signature or exact text.
-   - **Where each change goes**: the files, Owned or Seed for a Template file (and which dotfiles copy follows it), and the module headers for `.sandcastle/`.
+   - **Where each change goes**: the files and the type or module each change sits in, and anything the shared rules say about copies of a file.
    - **Tests**: what the tester should pin for each acceptance criterion, and where.
    - **Risks**: what could go wrong, what to watch for, and anything the issue leaves open that you decided.
 2. Write no production code, no tests and no stubs. The tester and the developers write those from your note.
-3. Commit an ADR under the skill's `docs/adr/` only for a decision that is all three of: hard to reverse, surprising to a reader of the code, and a real trade-off between options. Most
+3. Commit an ADR under `docs/adr/` only for a decision that is all three of: hard to reverse, surprising to a reader of the code, and a real trade-off between options. Most
    issues need none. Follow the existing ADRs' numbering and format: what was decided and why, then `## Considered Options`. Lint it with
    `markdownlint-cli2 <file>`, and commit it with `docs(adr): <Summary>`. Name the ADR in the design note.
 

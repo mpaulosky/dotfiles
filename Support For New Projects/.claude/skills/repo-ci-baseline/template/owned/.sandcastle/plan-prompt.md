@@ -31,6 +31,7 @@ when the issue needs it: each one costs a run.
 
 - `architect`: the issue needs a design before the tests are written. Pick it when the issue adds a new type, module or public API whose shape the issue leaves open, touches
   several scripts or workflows that must agree, or makes a decision that would be hard to reverse. Leave it out for a fix or a change whose shape the issue already spells out.
+{{UI_ROLE}}
 - `scribe`: the issue adds or changes a domain term in `CONTEXT.md`, or changes what `README.md`, `CLAUDE.md` or a page under `docs/` describes. Leave it out when the
   issue only changes code and its tests.
 
@@ -39,8 +40,8 @@ An empty list, `[]`, means the issue needs none of them. If you leave `roles` ou
 # FILES
 
 For each issue you pick, also list in `files` the repo-relative path of every file the issue will add, change, delete or rename (both names for a rename). Find them by reading
-the repo, not by guessing from the title. Give paths only: no globs and no directories, unless the issue adds files under a new directory, in which case name the directory, which
-covers every path under it.
+the repo (`CLAUDE.md` says how it is laid out, `.sandcastle/CODING_STANDARDS.md` where the repo has one holds its code standards, and the rules below say what else to read), not by guessing from the
+title. Give paths only: no globs and no directories, unless the issue adds files under a new directory, in which case name the directory, which covers every path under it.
 
 This list matters. Sandcastle won't build two picks that name the same file in one round, or a pick that names a file an open pull request changes, and it builds a pick with no
 `files` only when no pull request is open and it's the only pick it builds that round. A file you leave out risks a merge conflict; a file you list needlessly holds the
@@ -52,8 +53,8 @@ Output your plan as a JSON object wrapped in `<plan>` tags:
 
 <plan>
 {"issues": [
-  {"id": "42", "title": "Refuse an order with no lines", "roles": [], "files": ["src/Api/Orders/OrderValidator.cs", "tests/Api.Tests/Orders/OrderValidatorTests.cs"]},
-  {"id": "43", "title": "Add an order history page", "roles": ["architect", "scribe"], "files": ["src/Web/Pages/OrderHistory.razor", "README.md"]}
+  {"id": "42", "title": "Refuse an order with no lines", "roles": [], "files": ["src/orders/validate.ts", "tests/orders/validate.test.ts"]},
+  {"id": "43", "title": "Add an order history page", "roles": ["architect", "scribe"], "files": ["src/orders/history.ts", "README.md"]}
 ]}
 </plan>
 

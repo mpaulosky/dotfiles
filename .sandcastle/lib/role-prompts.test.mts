@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { uiEnabled } from "./agents.mts";
 import { backendPromptArgs } from "./prompts.mts";
 
 const sandcastleFile = (path: string) => new URL(`../${path}`, import.meta.url);
@@ -34,23 +35,60 @@ describe("developer roles across stacks", () => {
     assert.match(rules, /pnpm exec tsx --test/);
   });
 
+  // mpaulosky/dotfiles#392: the role prompts are the Template's Owned files and name no repo, so what they held about dotfiles is in its
+  // shared rules, which every role reads.
   it("tells the developers to keep dotfiles' copies of Owned files in step with the Template", () => {
-    assert.match(read("roles/shared-rules.md"), /copy it over the root copy/);
-    assert.match(read("roles/backend.md"), /copy the Template's file over the copy/);
+    const rules = read("roles/shared-rules.md");
+
+    assert.match(rules, /copy it over the root copy/);
+    assert.match(rules, /copy the Template's file over the copy before you finish/);
   });
 
-  it("tells the tester how to stub and where to put tests in each stack", () => {
+  it("tells the roles where tests go in each stack", () => {
+    const rules = read("roles/shared-rules.md");
+
+    assert.match(rules, /pr-automerge\.test\.mjs/);
+    assert.match(rules, /<name>\.test\.sh/);
+  });
+
+  it("tells the tester how to stub in each stack, in its own prompt", () => {
     const prompt = read("roles/tester.md");
 
-    assert.match(prompt, /pr-automerge\.test\.mjs/);
     assert.match(prompt, /throw new Error\("Not implemented"\)/);
     assert.match(prompt, /<module>\.test\.mts/);
   });
 
-  it("points the tester and backend at the Sandcastle rule for TypeScript work", () => {
-    for (const role of ["tester", "backend"]) {
-      assert.match(read(`roles/${role}.md`), /\.claude\/rules\/sandcastle\.md/, role);
+  it("points the roles at the Sandcastle rule for TypeScript work through the shared rules", () => {
+    assert.match(read("roles/shared-rules.md"), /\.claude\/rules\/sandcastle\.md/);
+  });
+
+  it("gives the roles dotfiles' reading list, the PR description pointer and the follow-up and scribe rules in the shared rules", () => {
+    const rules = read("roles/shared-rules.md");
+
+    for (const pointer of ["CONTEXT.md", "SKILL.md", "references/", "docs/adr/", "references/pr-process.md"]) {
+      assert.ok(rules.includes(pointer), `the shared rules don't name ${pointer}`);
     }
+    // The follow-up rule: a Template workflow fix goes in the Template's copy, and the four workflows with a root copy get the same change.
+    assert.match(rules, /follow-up/i);
+    assert.match(rules, /root copy/);
+    // The scribe's targets, and that Markdown inside the Template's folders is the developer's.
+    assert.match(rules, /scribe/i);
+    assert.ok(rules.includes("template/owned/") && rules.includes("template/seed/"), "the shared rules don't name the Template's folders");
+    assert.match(rules, /release-generated|no release/i);
+    // The planner lists both a Template file and its root copy.
+    assert.match(rules, /planner/i);
+    assert.match(rules, /`files`/);
+    // test.sh counts FAIL: lines, and the Sandcastle check runs only after it passes.
+    assert.match(rules, /FAIL:/);
+  });
+
+  // dotfiles has no .sandcastle/CODING_STANDARDS.md (only the Template's Seed has one), so its shared rules say where its standards are instead.
+  it("says in the shared rules where dotfiles' code standards are, since it has no .sandcastle/CODING_STANDARDS.md", () => {
+    assert.equal(existsSync(sandcastleFile("CODING_STANDARDS.md")), false, "dotfiles gained a CODING_STANDARDS.md: point the roles at it and drop this test");
+    const rules = read("roles/shared-rules.md").replace(/\s+/g, " ");
+
+    assert.match(rules, /no `\.sandcastle\/CODING_STANDARDS\.md`/);
+    assert.match(rules, /code standards[^.]*`\.claude\/rules\/sandcastle\.md`/);
   });
 
   it("names every node:test, pytest and test-script way to skip or todo a test as weakening it", () => {
@@ -121,15 +159,21 @@ describe("secret-shaped test fixtures", () => {
 // Issue #72: the optional roles the planner picks, and the design note the
 // architect passes to the roles after it.
 describe("optional role prompts", () => {
-  it("asks the planner for a roles field naming architect and scribe, and no UI developer", () => {
+  it("asks the planner for a roles field naming architect and scribe, with the ui bullet left to {{UI_ROLE}} (dotfiles has no UI role)", () => {
     const prompt = read("plan-prompt.md");
 
     assert.match(prompt, /"roles": \[/);
     for (const role of ["architect", "scribe"]) {
       assert.match(prompt, new RegExp(`^- \`${role}\`:`, "m"), role);
     }
+    assert.match(prompt, /^\{\{UI_ROLE\}\}$/m);
     assert.doesNotMatch(prompt, /^- `ui`:/m);
-    assert.equal(existsSync(sandcastleFile("roles/ui.md")), false);
+  });
+
+  // mpaulosky/dotfiles#392: roles/ui.md is Owned and opt-in, so every repo has the file and the role stays inert until ROLE_AGENTS has a `ui` entry.
+  it("carries roles/ui.md, which is inert here because dotfiles' ROLE_AGENTS has no ui entry", async () => {
+    assert.ok(existsSync(sandcastleFile("roles/ui.md")), "roles/ui.md is missing: it is an Owned copy in every repo");
+    assert.equal(uiEnabled(), false);
   });
 
   it("has the architect write its design note to .sandcastle/work/{n}/design.md, with its earlier note as input", () => {
@@ -151,14 +195,16 @@ describe("optional role prompts", () => {
     assert.match(String(backendPromptArgs({ number: 1, title: "t", body: "", labels: [], comments: [] }, "b", false).UI_DEVELOPER), /last developer run/);
   });
 
-  it("keeps the scribe off release-generated files, ADRs and the Template's own Markdown", () => {
+  it("keeps the scribe off release-generated files and ADRs, and sends it to the shared rules for anything the repo says belongs elsewhere", () => {
     const prompt = read("roles/scribe.md");
 
-    for (const path of ["docs/blogs/", "docs/README.md", "docs/index.html", "docs/adr/", "template/owned/"]) {
+    for (const path of ["docs/blogs/", "docs/README.md", "docs/index.html", "docs/adr/"]) {
       assert.ok(prompt.includes(`\`${path}\``), path);
     }
     assert.match(prompt, /commit nothing/i);
     assert.match(prompt, /markdownlint-cli2/);
+    assert.match(prompt, /anything the shared rules say belongs elsewhere/);
+    assert.ok(!prompt.includes("template/owned/"), "the Template's folders are dotfiles' own, so they belong in the shared rules");
   });
 });
 
@@ -289,9 +335,10 @@ describe("every prompt", () => {
   }
 });
 
-// #280: the Template's Seed prompts are dotfiles' prompts rewritten for any repo. Sandcastle (lib/prompts.mts) fills the {{NAME}}s at
+// #280: the Template's Seed files under roles/ are dotfiles' text rewritten for any repo. Sandcastle (lib/prompts.mts) fills the {{NAME}}s at
 // run time, so a rewrite that drops one leaves a value unused, or an agent without what it needs. Apply fills {{OWNER}}, {{REPO}}
-// and {{SOLUTION}} itself, so those three aren't compared.
+// and {{SOLUTION}} itself, so those three aren't compared. mpaulosky/dotfiles#392 made the role prompts Owned, which test.sh compares byte for
+// byte with dotfiles' copies, so only the repo's own two files are left here.
 describe("the Template's Seed prompts", () => {
   const seedSandcastle = new URL(
     "../../Support For New Projects/.claude/skills/repo-ci-baseline/template/seed/.sandcastle/",
@@ -302,13 +349,8 @@ describe("the Template's Seed prompts", () => {
     const names = new Set([...text.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((match) => match[1]!));
     return [...names].filter((name) => !applyPlaceholders.has(name)).sort();
   };
-  const prompts = [
-    "plan-prompt.md",
-    "review-prompt.md",
-    ...["architect", "backend", "tester", "scribe", "gate-fixer", "follow-up", "shared-rules"].map((role) => `roles/${role}.md`),
-  ];
 
-  for (const prompt of prompts) {
+  for (const prompt of ["roles/shared-rules.md", "roles/skills.md"]) {
     it(`${prompt} has the Sandcastle placeholders dotfiles' copy has`, () => {
       const seed = new URL(prompt, seedSandcastle);
 
@@ -317,18 +359,190 @@ describe("the Template's Seed prompts", () => {
     });
   }
 
-  // dotfiles doesn't opt into the UI developer, so it has no roles/ui.md of its own to compare with: the Seed's carries the
-  // placeholders lib/prompts.mts#issuePromptArgs and withSharedRules fill, and no other.
-  it("roles/ui.md is in the Seed with the placeholders every developer role gets", () => {
-    const seed = new URL("roles/ui.md", seedSandcastle);
+  it("keeps none of the nine Owned prompts", () => {
+    for (const prompt of ["plan-prompt.md", "review-prompt.md", ...["architect", "backend", "tester", "scribe", "gate-fixer", "follow-up", "ui"].map((role) => `roles/${role}.md`)]) {
+      assert.equal(existsSync(new URL(prompt, seedSandcastle)), false, `the Template's Seed still has .sandcastle/${prompt}`);
+    }
+  });
 
-    assert.ok(existsSync(seed), "the Template's Seed has no .sandcastle/roles/ui.md");
-    assert.deepEqual(placeholders(readFileSync(seed, "utf8")), placeholders(read("roles/tester.md")));
+  it("has an empty roles/skills.md, which a .NET repo fills with its # SKILLS block", () => {
+    const seed = new URL("roles/skills.md", seedSandcastle);
+
+    assert.ok(existsSync(seed), "the Template's Seed has no .sandcastle/roles/skills.md");
+    assert.equal(readFileSync(seed).length, 0);
+  });
+
+  it("gives the yamllint command roles/tester.md sends the tester to, with the config the Template ships at the repo root", () => {
+    const rules = readFileSync(new URL("roles/shared-rules.md", seedSandcastle), "utf8");
+
+    assert.match(read("roles/tester.md"), /the command is in the rules below/);
+    assert.match(rules, /`yamllint -c \.yamllint\.yml <file>`/);
+  });
+
+  it("points every role at what a repo adds, in roles/shared-rules.md: CONTEXT.md and .claude/rules/ where present, and the UI developer's files", () => {
+    const rules = readFileSync(new URL("roles/shared-rules.md", seedSandcastle), "utf8");
+
+    assert.match(rules, /CONTEXT\.md/);
+    assert.match(rules, /\.claude\/rules\//);
+    assert.match(rules, /UI developer/);
+  });
+
+  it("tells the tester where tests go in the Seed shared rules, since tester.md leaves that to the rules", () => {
+    const rules = readFileSync(new URL("roles/shared-rules.md", seedSandcastle), "utf8");
+
+    assert.match(rules, /Where tests go: in the test project under `tests\/` for the project under `src\/`, and as `<module>\.test\.mts` beside a Sandcastle module/);
+  });
+
+  it("lists the Owned prompts in the Seed coding standards, so a repo doesn't edit one a re-Apply overwrites", () => {
+    const standards = readFileSync(new URL("CODING_STANDARDS.md", seedSandcastle), "utf8").replace(/\s+/g, " ");
+    const owned = new URL("../../owned/.sandcastle/", seedSandcastle);
+    const prompts = readdirSync(owned).filter((name) => name.endsWith("-prompt.md"));
+
+    assert.ok(prompts.length >= 4, `expected the Owned top-level prompts, found ${JSON.stringify(prompts)}`);
+    for (const name of prompts) assert.ok(standards.includes(`\`${name}\``), `the Seed coding standards don't name the Owned ${name}`);
+    assert.match(standards, /every role prompt under `roles\/` but `shared-rules\.md` and `skills\.md` are owned/);
   });
 });
 
-// The Seed prompt is never overwritten, so the reviewer's rules for its PR description are a placeholder the Template fills in
-// (lib/prompts.mts#reviewerPromptArgs), here and in the Seed.
+// mpaulosky/dotfiles#392: the nine prompts that instruct the pipeline's roles are the Template's Owned files, read in every repo, so they hold
+// no repo's text: a repo's content goes in roles/shared-rules.md and roles/skills.md.
+describe("the Template's Owned prompts", () => {
+  const ownedSandcastle = new URL(
+    "../../Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/.sandcastle/",
+    import.meta.url,
+  );
+  const owned = (path: string) => {
+    const file = new URL(path, ownedSandcastle);
+    assert.ok(existsSync(file), `the Template's Owned folder has no .sandcastle/${path}`);
+    return readFileSync(file, "utf8");
+  };
+  const rolePrompts = ["architect", "backend", "tester", "follow-up", "gate-fixer", "scribe", "ui"].map((role) => `roles/${role}.md`);
+  const prompts = ["plan-prompt.md", "review-prompt.md", ...rolePrompts];
+
+  for (const prompt of prompts) {
+    it(`${prompt} holds no repo's name, stack or issue number`, () => {
+      const text = owned(prompt);
+
+      assert.doesNotMatch(text, /\{\{(OWNER|REPO|SOLUTION)\}\}/, "Apply would fill it, and an Owned file is overwritten");
+      assert.doesNotMatch(text, /Blazor|\.razor|bUnit|dotnet|\.slnx/);
+      // dotfiles' own text belongs in its shared-rules.md: test.sh greps the Seed's .sandcastle for these words, but not the Owned prompts.
+      // `mpaulosky/dotfiles#N` is how an Owned file names a dotfiles issue, so it is let through.
+      assert.doesNotMatch(
+        text.replace(/mpaulosky\/dotfiles#\d+/g, ""),
+        /dotfiles|repo-ci-baseline|Support For New Projects/,
+        "dotfiles' own text goes in dotfiles' roles/shared-rules.md",
+      );
+      assert.doesNotMatch(text, /(?<![\w/])#\d+\b/, "a bare #N reads as the repo's own issue");
+    });
+  }
+
+  for (const prompt of prompts) {
+    it(`${prompt} tells no role a yamllint config path or a CODING_STANDARDS.md the repo may lack`, () => {
+      const text = owned(prompt);
+
+      assert.doesNotMatch(text, /yamllint -c \S*\.yamllint\.yml/, "the shared rules give the yamllint command: a repo's config path differs (dotfiles has no root .yamllint.yml)");
+      // Whitespace is collapsed first: a prompt wraps its lines anywhere.
+      const flat = text.replace(/\s+/g, " ");
+      const named = flat.match(/\.sandcastle\/CODING_STANDARDS\.md/g)?.length ?? 0;
+      const hedged = flat.match(/\.sandcastle\/CODING_STANDARDS\.md` where the repo has one/g)?.length ?? 0;
+      assert.equal(hedged, named, "a repo may have no .sandcastle/CODING_STANDARDS.md: say `.sandcastle/CODING_STANDARDS.md` where the repo has one");
+    });
+  }
+
+  for (const prompt of ["plan-prompt.md", "review-prompt.md", "roles/architect.md", "roles/tester.md", "roles/backend.md", "roles/ui.md"]) {
+    it(`${prompt} points at CLAUDE.md, docs/adr/, the coding standards and whatever else the rules below point to`, () => {
+      const text = owned(prompt);
+
+      assert.match(text, /`CLAUDE\.md`/);
+      assert.match(text, /\.sandcastle\/CODING_STANDARDS\.md/);
+      if (prompt !== "plan-prompt.md" && prompt !== "review-prompt.md") {
+        assert.match(text, /`docs\/adr\/`/);
+        assert.match(text, /whatever else the rules below point to/);
+      }
+    });
+  }
+
+  for (const role of ["architect", "backend", "tester", "follow-up", "gate-fixer", "scribe", "ui"]) {
+    it(`roles/${role}.md gets the shared rules`, () => {
+      assert.match(owned(`roles/${role}.md`), /\{\{SHARED_RULES\}\}/);
+    });
+  }
+
+  it("gives the planner and the reviewer the shared rules too", () => {
+    for (const prompt of ["plan-prompt.md", "review-prompt.md"]) assert.match(owned(prompt), /\{\{SHARED_RULES\}\}/, prompt);
+  });
+
+  for (const role of ["tester", "backend", "ui"]) {
+    it(`roles/${role}.md has {{REPO_SKILLS}} on a line of its own before its # EXECUTION section`, () => {
+      const text = owned(`roles/${role}.md`);
+      const at = text.search(/^\{\{REPO_SKILLS\}\}$/m);
+
+      assert.notEqual(at, -1);
+      assert.ok(at < text.indexOf("\n# EXECUTION"), "it goes before # EXECUTION, where the # SKILLS block sat");
+      assert.doesNotMatch(text, /^# SKILLS\s*$/m);
+    });
+  }
+
+  it("names the developer, not the backend developer, in roles/ui.md, which also calls itself the UI developer", () => {
+    const text = owned("roles/ui.md");
+
+    assert.match(text, /the developer/);
+    assert.match(text, /UI developer/);
+    assert.doesNotMatch(text, /backend developer/);
+  });
+
+  it("asks the planner for {{UI_ROLE}} on a line of its own between the architect and scribe bullets, with no static ui bullet", () => {
+    const text = owned("plan-prompt.md");
+    const architect = text.search(/^- `architect`:/m);
+    const slot = text.search(/^\{\{UI_ROLE\}\}$/m);
+    const scribe = text.search(/^- `scribe`:/m);
+
+    assert.ok(architect !== -1 && slot !== -1 && scribe !== -1);
+    assert.ok(architect < slot && slot < scribe, "{{UI_ROLE}} goes between the architect and scribe bullets");
+    assert.doesNotMatch(text, /^- `ui`:/m);
+    assert.match(text, /"roles": \[/);
+    assert.equal(text.match(/"files": \[/g)?.length, 2, "the example plan keeps two picks, each with files");
+  });
+
+  it("tells the tester to build with the build commands in the shared rules, and still shows the stubs for C#, TypeScript and shell or Python", () => {
+    const text = owned("roles/tester.md");
+
+    assert.match(text, /build commands in the rules below/);
+    assert.match(text, /throw new Error\("Not implemented"\)/);
+    assert.match(text, /<module>\.test\.mts/);
+    assert.match(text, /C#/);
+  });
+
+  it("keeps the full skip and todo list in the backend and gate-fixer prompts", () => {
+    for (const role of ["backend", "gate-fixer"]) {
+      const text = owned(`roles/${role}.md`);
+
+      for (const form of ["`.skip`", "`.todo`", "`xfail`", "`pytest.skip()`", "`exit 0`"]) assert.ok(text.includes(form), `${role} doesn't name ${form}`);
+    }
+  });
+
+  it("leaves the Template's own files to the shared rules in the backend, follow-up, scribe and architect prompts", () => {
+    assert.doesNotMatch(owned("roles/backend.md"), /copy the Template's file over the copy/);
+    const followUp = owned("roles/follow-up.md");
+    assert.match(followUp, /only as the shared rules say/);
+    assert.match(followUp, /out of scope/);
+    assert.match(followUp, /can't push a workflow change/);
+    const scribe = owned("roles/scribe.md");
+    assert.match(scribe, /anything the shared rules say belongs elsewhere/);
+    assert.doesNotMatch(scribe, /template\/owned\//);
+    assert.match(owned("roles/architect.md"), /anything the shared rules say about copies of a file/);
+    assert.match(owned("roles/gate-fixer.md"), /one at a time/);
+  });
+
+  it("follows docs/PROCESS.md in the review prompt only where the repo has one", () => {
+    const text = owned("review-prompt.md");
+
+    assert.match(text, /docs\/PROCESS\.md/);
+    assert.match(text, /where the repo has one/);
+  });
+});
+
+// The reviewer's rules for its PR description are a placeholder the host fills in (lib/prompts.mts#reviewerPromptArgs).
 describe("review-prompt.md", () => {
   it("has {{PR_BODY_RULES}}, and still names pr-body.md and the three headings", () => {
     const prompt = read("review-prompt.md");
@@ -336,5 +550,97 @@ describe("review-prompt.md", () => {
     assert.match(prompt, /\{\{PR_BODY_RULES\}\}/);
     assert.match(prompt, /pr-body\.md/);
     for (const heading of ["## Why", "## What changed", "## Verification"]) assert.ok(prompt.includes(heading), heading);
+  });
+});
+
+// mpaulosky/dotfiles#392 made the plan, review and role prompts Owned: Apply overwrites them. A comment or a failure message that still calls one a
+// Seed file Apply never overwrites sends a reader to a file that no longer exists. Sandcastle also accepts an empty prompt argument (it refuses
+// only null and undefined), so no comment may claim otherwise.
+describe("comments about the prompts", () => {
+  const stale: [RegExp, string][] = [
+    [/Seed (review-prompt|gate-fixer|plan-prompt)/, "that prompt is Owned"],
+    [/Seed prompt\b/, "the prompts are Owned"],
+    [/Apply never overwrites/, "Apply overwrites an Owned prompt"],
+    [/Seed[^.\n]*never overwritten|never overwritten[^.\n]*Seed/, "Apply overwrites an Owned prompt"],
+    [/Sandcastle refuses (an empty|a placeholder)/, "Sandcastle refuses only null and undefined"],
+    [/since Sandcastle refuses/, "Sandcastle refuses only null and undefined"],
+  ];
+  const sources = readdirSync(new URL("./", import.meta.url))
+    .filter((name) => name.endsWith(".mts") && name !== "role-prompts.test.mts")
+    .map((name) => `lib/${name}`)
+    .concat(["main.mts", "status.mts"]);
+
+  for (const source of sources) {
+    it(`${source} calls no Owned prompt a Seed file and says nothing false about empty prompt arguments`, () => {
+      const lines = read(source).split("\n");
+
+      for (const [pattern, why] of stale) {
+        const at = lines.findIndex((line) => pattern.test(line));
+        assert.equal(at, -1, `${source}:${at + 1} matches ${pattern}: ${why}`);
+      }
+    });
+  }
+});
+
+describe("the agents.mts header", () => {
+  it("says {{REPO_SKILLS}} goes only to a prompt that has the placeholder, as withSharedRules does", () => {
+    const header = read("lib/agents.mts").split("\n").filter((line) => line.startsWith("//")).join(" ").replace(/\/\/\s*/g, "").replace(/\s+/g, " ");
+
+    assert.doesNotMatch(header, /Every role's prompt file also gets the shared role rules as \{\{SHARED_RULES\}\} and the repo's skills block as \{\{REPO_SKILLS\}\}/);
+    assert.match(header, /\{\{REPO_SKILLS\}\} to a prompt that has that placeholder/);
+  });
+});
+
+// mpaulosky/dotfiles#392: the prose that describes the prompts says they are Owned. Each of these once described the Seed prompts.
+describe("the docs about the Owned prompts", () => {
+  const skill = new URL("../../Support For New Projects/.claude/skills/repo-ci-baseline/", import.meta.url);
+  const doc = (path: string) => readFileSync(new URL(path, skill), "utf8").replace(/\s+/g, " ");
+
+  it("ADR 0006's title no longer calls the prompts Seed, and its owning-the-pipeline option says #392 superseded it in part", () => {
+    const adr = doc("docs/adr/0006-sandcastle-section-of-the-template.md");
+
+    assert.doesNotMatch(adr.slice(0, adr.indexOf(" **Status:**")), /prompts are Seed/);
+    assert.match(adr, /^# Sandcastle's shared files and prompts are Owned/);
+    const option = adr.slice(adr.indexOf("**Owning the whole pipeline**"), adr.indexOf("**Keeping the role prompts Seed**"));
+    assert.match(option, /mpaulosky\/dotfiles#392/);
+    assert.doesNotMatch(option, /role prompts hold per-repo values/);
+  });
+
+  it("SKILL.md says a re-Apply asks for a review when it writes a Sandcastle prompt, not only a judging role's", () => {
+    const text = doc("SKILL.md");
+
+    assert.doesNotMatch(text, /a judging-role prompt/);
+    assert.match(text, /a Sandcastle prompt \(intake, critique, plan, review or a role's\)/);
+  });
+
+  it("references/sandcastle.md says where a sandbox gate's instructions go and why SANDBOX_SKILLS is empty", () => {
+    const text = doc("references/sandcastle.md");
+
+    assert.doesNotMatch(text, /a Seed prompt can't promise a skill/);
+    assert.match(text, /a skills block that lists a skill a host may lack can't be in the Seed/);
+    assert.doesNotMatch(text, /points the gate-fixer and follow-up roles' instructions at it/);
+    assert.match(text, /points the gate-fixer and follow-up roles at it in `roles\/shared-rules\.md`/);
+    const beforeApply = text.slice(text.indexOf("**Before Apply**"), text.indexOf("Diff the repo's `Dockerfile`"));
+    assert.match(beforeApply, /instructions for a sandbox gate \(step 8\)/);
+  });
+
+  it("README.md step 7 doesn't send a reader back to editing the Owned prompts", () => {
+    const text = readFileSync(new URL("../../README.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+
+    assert.doesNotMatch(text, /Adapt those two as in step 6/);
+    assert.match(text, /`critique-prompt\.md` and the role prompts are Owned and used as they are/);
+    assert.doesNotMatch(text, /Tell the implementer not to push/);
+    assert.doesNotMatch(text, /The Owned prompts already tell the implementer not to push/, "no Owned prompt says it: the Seed roles/shared-rules.md does");
+    assert.match(text, /The Seed `roles\/shared-rules\.md` already tells every role never to push, run `gh` or write to GitHub/);
+    assert.match(text, /list them in `roles\/skills\.md`/);
+    assert.doesNotMatch(text, /Have the planner skip issues whose branch already has an open pull request/);
+  });
+
+  it("the Seed repo-config.mts tells a repo to list a mounted skill in roles/skills.md, not in the prompts", () => {
+    const text = doc("template/seed/.sandcastle/lib/repo-config.mts").replace(/ \/\/ /g, " ");
+    const comment = text.slice(text.indexOf("The host skills the role prompts"), text.indexOf("export const SANDBOX_SKILLS"));
+
+    assert.doesNotMatch(comment, /`# SKILLS` section of the tester/);
+    assert.match(comment, /`roles\/skills\.md`, which the host passes to the tester, backend and ui prompts as \{\{REPO_SKILLS\}\}/);
   });
 });

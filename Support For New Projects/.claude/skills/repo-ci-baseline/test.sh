@@ -135,7 +135,7 @@ step "markdownlint"
 command cp -f "$owned/.markdownlint-cli2.jsonc" "$md_tmp/template.markdownlint-cli2.jsonc"
 (cd "$skill_dir" && markdownlint-cli2 --config "$md_tmp/template.markdownlint-cli2.jsonc" \
   '*.md' 'references/*.md' 'docs/**/*.md' 'template/**/*.md' 'template/**/.*/**/*.md' '!template/seed/.sandcastle/**') || fail "markdownlint"
-# The Seed Sandcastle prompts, as an Applied repo lints them: beside the Owned
+# The Seed Sandcastle Markdown, as an Applied repo lints it: beside the Owned
 # .sandcastle/.markdownlint-cli2.jsonc, which markdownlint-cli2 merges with --config.
 mkdir -p "$md_tmp/seed-sandcastle/.sandcastle"
 (cd "$seed/.sandcastle" && find . -name '*.md' -exec cp --parents {} "$md_tmp/seed-sandcastle/.sandcastle/" \;)
@@ -302,7 +302,9 @@ for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.y
   .sandcastle/lib/round.mts .sandcastle/lib/round.test.mts .sandcastle/lib/sandbox-env.mts .sandcastle/lib/sandbox-env.test.mts \
   .sandcastle/lib/scan.mts .sandcastle/lib/scan.test.mts .sandcastle/lib/security-record.mts .sandcastle/lib/security-record.test.mts .sandcastle/lib/shell.mts .sandcastle/lib/shell.test.mts \
   .sandcastle/lib/skills.mts .sandcastle/lib/skills.test.mts .sandcastle/lib/status.mts .sandcastle/lib/status.test.mts .sandcastle/lib/step-limit.mts .sandcastle/lib/step-limit.test.mts .sandcastle/lib/ui-role-fixture.mts .sandcastle/lib/ui-role-fixture.test.mts .sandcastle/lib/umbrella.mts .sandcastle/lib/umbrella.test.mts \
-  .sandcastle/lib/work.mts .sandcastle/lib/work.test.mts .sandcastle/main.mts .sandcastle/status.mts .sandcastle/status.test.mts .sandcastle/tsconfig.json; do
+  .sandcastle/lib/work.mts .sandcastle/lib/work.test.mts .sandcastle/main.mts \
+  .sandcastle/plan-prompt.md .sandcastle/review-prompt.md .sandcastle/roles/architect.md .sandcastle/roles/backend.md .sandcastle/roles/follow-up.md .sandcastle/roles/gate-fixer.md .sandcastle/roles/scribe.md .sandcastle/roles/tester.md .sandcastle/roles/ui.md \
+  .sandcastle/status.mts .sandcastle/status.test.mts .sandcastle/tsconfig.json; do
   cmp -s "$owned/$file" "$dotfiles/$file" || fail "dotfiles' $file differs from the Template's; copy it over"
   # The mode too: a hook that isn't executable doesn't run.
   owned_x=no; dotfiles_x=no

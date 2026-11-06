@@ -39,25 +39,25 @@ Here are the last 10 commits:
 
 Explore the repo and fill your context window with relevant information that will allow you to complete the task.
 
-Read the repo-ci-baseline skill's `CONTEXT.md` for the domain language, its `docs/adr/` for recorded decisions and its `references/` page for the part of the Template the issue
-touches (see the rules below), and `.claude/rules/sandcastle.md` for Sandcastle's TypeScript in `.sandcastle/`.
+Read `CLAUDE.md` for how the repo is built and laid out, `docs/adr/` (where present) for recorded decisions, `.sandcastle/CODING_STANDARDS.md` where the repo has one for the code standards, and
+whatever else the rules below point to.
 
 Pay extra attention to existing test files near the code the issue touches, and follow their layout and naming.
+
+{{REPO_SKILLS}}
 
 # EXECUTION
 
 1. List the issue's acceptance criteria. Each one needs at least one test, and the name of each test should make it clear which criterion it checks.
-2. Write the tests through the behaviour the issue describes, in the test file that already covers the code it touches (see the rules below): `pr-automerge.test.mjs` for PR
-   Auto-Merge's inline script, the pytest file for a Python script or workflow `run:` step, the `.test.sh` beside a hook or shell script, and `<module>.test.mts` beside a
-   Sandcastle module.
-3. When a test calls something that doesn't exist yet, add the smallest stub that lets it load: for TypeScript, `throw new Error("Not implemented")`; for a shell or Python
-   function, one that exits or raises with "Not implemented". Write no real behaviour. When the change is to existing behaviour, the test needs no stub: it fails against the
-   current code.
-4. For Sandcastle's TypeScript, type-check with `pnpm exec tsc --noEmit -p .sandcastle` and fix every error.
+2. Write the tests through the behaviour the issue describes, in the test project or file that already covers the code it touches (see the rules below), and follow where
+   the rules say tests go: for example `<module>.test.mts` beside a Sandcastle module.
+3. When a test calls something that doesn't exist yet, add the smallest stub that lets it load: for C#, `throw new NotImplementedException();`; for TypeScript,
+   `throw new Error("Not implemented")`; for a shell or Python function, one that exits or raises with "Not implemented". Write no real behaviour. When the change is to
+   existing behaviour, the test needs no stub: it fails against the current code.
+4. Build what you changed with the build commands in the rules below and fix every error.
 5. Run the tests you wrote with the stack's test command, and confirm each one fails for the reason you expect: an assertion failing or the stub throwing, not a syntax error, a
    missing fixture or a broken setup.
-6. Lint the files you changed: `markdownlint-cli2 <file>` for Markdown, `shellcheck <file>` for shell, and `yamllint` with the Template's `.yamllint.yml` for YAML (the
-   command is in the rules below).
+6. Lint the files you changed: `markdownlint-cli2 <file>` for Markdown, `shellcheck <file>` for shell, and `yamllint` for YAML (the command is in the rules below).
 7. Commit the tests and stubs red, with `test(<scope>): <Summary>`. Say in the body which test covers which criterion.
 
 When a criterion can't be tested automatically (for example, it's about docs or a manual step), don't write a test that doesn't check it. Name the criterion and why it can't be

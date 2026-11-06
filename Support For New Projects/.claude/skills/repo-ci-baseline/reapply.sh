@@ -30,7 +30,7 @@
 #      prints its log's path and exits 1. The gate lets a re-Apply through without
 #      a review only when every file is an Owned file that carries no behaviour; when Apply writes the coverage
 #      threshold, the hand-off rules, an issue template, the reviewer agent, a
-#      judging-role prompt, the local gate's check.sh or global.json, the gate asks for one
+#      Sandcastle prompt (intake, critique, plan, review or a role's), the local gate's check.sh or global.json, the gate asks for one
 #      (its message names them): run /pre-push-review in the worktree, then run
 #      this again.
 #   5. Open the re-Apply PR (ready, not a draft), or add a line for this Apply

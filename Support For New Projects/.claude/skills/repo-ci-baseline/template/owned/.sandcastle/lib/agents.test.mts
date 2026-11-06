@@ -7,6 +7,7 @@ import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import type { AgentProvider } from "@ai-hero/sandcastle";
 import {
   isRoleTimeout,
+  LEAD_AGENT_NAME,
   LEAD_DENIED_TOOLS,
   leadTools,
   LEDGER_DENIED_TOOLS,
@@ -471,24 +472,40 @@ describe("restrictedClaudeCode's --agents", () => {
     assert.ok(at >= 0, `no --agents in ${command}`);
     return JSON.parse(words[at + 1]!);
   };
+  // The definitions `--agents` carries besides the lead's own.
+  const lensesOf = (command: string): unknown => {
+    const { [LEAD_AGENT_NAME]: _lead, ...lenses } = agentsJson(command) as Record<string, unknown>;
+    return lenses;
+  };
 
   it("hands claude the definitions as one JSON word, by name", () => {
     const agents = { "lens-1": definition(), "lens-2": definition({ description: "Reviews through the Tests lens" }) };
 
-    assert.deepEqual(agentsJson(commandOf(leadFor(agents))), agents);
+    assert.deepEqual(lensesOf(commandOf(leadFor(agents))), agents);
   });
 
   it("keeps a single quote, a double quote, a dollar sign and a backtick in a definition intact through the shell", () => {
     const agents = { "lens-1": definition({ description: `it's the "Edge cases" lens $HOME \`id\``, prompt: `Don't $(touch /tmp/x); read 'the file'` }) };
 
-    assert.deepEqual(agentsJson(commandOf(leadFor(agents))), agents);
+    assert.deepEqual(lensesOf(commandOf(leadFor(agents))), agents);
   });
 
-  it("still emits --tools, --strict-mcp-config, --setting-sources user and the deny list beside --agents", () => {
+  it("defines the lead in --agents with the Agent allowlist as its own tools and starts it with --agent, since --tools gives a session no Agent tool for Agent(name,...)", () => {
+    const command = commandOf(leadFor({ "lens-1": definition(), "lens-2": definition() }));
+    const words = wordsOf(command);
+    const lead = (agentsJson(command) as Record<string, { tools: string[]; model: string }>)[LEAD_AGENT_NAME]!;
+
+    assert.equal(LEAD_AGENT_NAME, "pre-push-review-lead");
+    assert.deepEqual(lead.tools, ["Agent(lens-1,lens-2)", ...REVIEWER_TOOLS]);
+    assert.equal(lead.model, "sonnet");
+    assert.equal(words[words.indexOf("--agent") + 1], LEAD_AGENT_NAME);
+    assert.ok(!words.includes("--tools"), "--tools would leave the lead no Agent tool");
+  });
+
+  it("still emits --strict-mcp-config, --setting-sources user and the deny list beside --agents", () => {
     const command = commandOf(leadFor({ "lens-1": definition() }));
     const words = wordsOf(command);
 
-    assert.equal(words[words.indexOf("--tools") + 1], leadTools(["lens-1"]).join(","));
     assert.ok(words.includes("--strict-mcp-config"));
     assert.equal(words[words.indexOf("--setting-sources") + 1], "user");
     assert.ok(words.includes("--disallowedTools"));
@@ -568,7 +585,11 @@ describe("restrictedClaudeCode's --agents", () => {
   });
 
   // The size of the word the shell is handed: the JSON in single quotes, each single quote inside it written as four bytes ('\'').
-  const wordBytes = (agents: Record<string, SubagentDefinition>) => Buffer.byteLength(`'${JSON.stringify(agents).replaceAll("'", `'\\''`)}'`);
+  // The lead's own definition goes in the word too, so the test builds the same JSON restrictedClaudeCode does (the real function throws over the cap).
+  const wordBytes = (agents: Record<string, SubagentDefinition>) => {
+    const lead = { description: "Starts the round's reviewers and relays their answers", prompt: "Follow the task you are given.", tools: leadTools(Object.keys(agents)), model: "sonnet" };
+    return Buffer.byteLength(`'${JSON.stringify({ ...agents, [LEAD_AGENT_NAME]: lead }).replaceAll("'", `'\\''`)}'`);
+  };
   const build = (agents: Record<string, SubagentDefinition>) => () => restrictedClaudeCode("sonnet", "high", leadFor(agents));
   // One definition whose word is exactly `bytes` long, padded with `filler` (one byte per character unless it says otherwise).
   const sized = (bytes: number, filler = "d", perFiller = 1) => {

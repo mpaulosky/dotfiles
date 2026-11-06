@@ -75,6 +75,8 @@ export const MAX_AGENTS_WORD_BYTES = 60_000;
 
 // The built-in subagent types of Claude Code known today. This list is a second layer only: it can't name a type a later release adds or one from the user's own
 // `~/.claude/agents` or a plugin (`--setting-sources user` still loads those), so the lead's `Agent` tool is also restricted to the defined `lens-<id>` agents (leadTools).
+// A real `claude` 2.1.317 showed that `--tools 'Agent(a,b),Read'` gives the session no Agent tool at all and a bare `Agent` there starts user-level and plugin agents as well,
+// so the lead is itself defined in `--agents` (LEAD_AGENT_NAME) and started with `--agent`: its own `tools` list is where `Agent(a,b)` is enforced (every other type is "not found").
 // `general-purpose` holds every tool, a shell and the network among them, and the lead reads answers from reviewers that read branch-planted files.
 const BUILTIN_SUBAGENT_TYPES = ["general-purpose", "Explore", "Plan", "statusline-setup", "claude-code-guide", "output-style-setup"] as const;
 
@@ -84,9 +86,12 @@ export const LEAD_DENIED_TOOLS: readonly string[] = [...LEDGER_DENIED_TOOLS, ...
 // The subagent names `--agents` takes: lowercase ASCII, so a name is never a shell or JSON surprise (nor a wildcard, comma or parenthesis in an allowlist).
 const AGENT_NAME = /^[a-z][a-z0-9-]*$/;
 
+// The name the lead is defined under in `--agents`, and started as with `--agent`.
+export const LEAD_AGENT_NAME = "pre-push-review-lead";
+
 // The tools the lead of a review's subagents gets: `Agent(<names>)`, which lets it start only those subagents and no other, and the reviewers' own tools.
-// Whether Claude Code honours `Agent(name,...)` in `--tools` is to be confirmed in a real sandbox; restrictedClaudeCode refuses a lead whose Agent tool isn't exactly
-// this, and the deny list in LEAD_DENIED_TOOLS stays beside it.
+// Claude Code honours `Agent(name,...)` in a `--agents` definition's `tools`, not in `--tools`; restrictedClaudeCode puts these tools there, refuses a lead whose Agent tool
+// isn't exactly this, and the deny list in LEAD_DENIED_TOOLS stays beside it.
 export function leadTools(agentNames: readonly string[]): string[] {
   if (agentNames.length === 0) throw new Error("the lead's Agent tool needs at least one agent to allow");
   for (const name of agentNames) {
@@ -114,7 +119,7 @@ function shellWord(value: string): string {
 
 // `agents` as the JSON `--agents` takes. Throws for a name that isn't plain, for none at all (`{}` is not the same as leaving `agents` out),
 // and for a shell word past MAX_AGENTS_WORD_BYTES, so a too-long command fails where the provider is built and not at exec.
-function agentsJson(agents: Readonly<Record<string, SubagentDefinition>>): string {
+function agentsJson(agents: Readonly<Record<string, SubagentDefinition>>, lead?: { model: string; tools: readonly string[] }): string {
   const names = Object.keys(agents);
   if (names.length === 0) throw new Error("the agents to define for --agents are empty: give none or at least one");
   for (const name of names) {
@@ -126,7 +131,11 @@ function agentsJson(agents: Readonly<Record<string, SubagentDefinition>>): strin
       throw new Error(`the subagent ${name} must hold some of ${REVIEWER_TOOLS.join(", ")} and no other tool, not ${JSON.stringify(tools)}`);
     }
   }
-  const json = JSON.stringify(agents);
+  const json = JSON.stringify(
+    lead === undefined
+      ? agents
+      : { ...agents, [LEAD_AGENT_NAME]: { description: "Starts the round's reviewers and relays their answers", prompt: "Follow the task you are given.", tools: lead.tools, model: lead.model } },
+  );
   const bytes = Buffer.byteLength(shellWord(json));
   if (bytes > MAX_AGENTS_WORD_BYTES) throw new Error(`the --agents word is ${bytes} bytes once quoted for the shell, over the limit of ${MAX_AGENTS_WORD_BYTES} bytes`);
   return json;
@@ -146,8 +155,9 @@ export function restrictedClaudeCode(
   const { tools, denied, strictMcp, userSettingsOnly, agents: subagents } = restrictions;
   if (subagents !== undefined) checkLeadAgentTool(tools, Object.keys(subagents));
   const flags = [
-    ...(tools === undefined ? [] : ["--tools", shellWord(tools.join(","))]),
-    ...(subagents === undefined ? [] : ["--agents", shellWord(agentsJson(subagents))]),
+    // With subagents the tools go on the lead's own definition (see above); `--tools` would leave it no Agent tool.
+    ...(tools === undefined || subagents !== undefined ? [] : ["--tools", shellWord(tools.join(","))]),
+    ...(subagents === undefined ? [] : ["--agents", shellWord(agentsJson(subagents, { model, tools: tools ?? [] })), "--agent", LEAD_AGENT_NAME]),
     ...(strictMcp === true ? ["--strict-mcp-config"] : []),
     ...(userSettingsOnly === true ? ["--setting-sources", "user"] : []),
     ...(denied === undefined || denied.length === 0 ? [] : ["--disallowedTools", ...denied.map(shellWord)]),

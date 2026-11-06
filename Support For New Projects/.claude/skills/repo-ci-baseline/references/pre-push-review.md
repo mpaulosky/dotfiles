@@ -218,7 +218,7 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   purpose: on Actions the local record is discarded with the runner, so the issue is the only copy that survives.
 - Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers.
 - A round's reviewers start one of two ways, chosen by `SANDCASTLE_REVIEWERS` (`lib/config.mts#reviewerMode`): `sequential` or `subagents`. Unset or empty means `sequential`, any other
-  value is refused at start-up (exit 2, before any sandbox starts), and the default stays `sequential` until a run in a real sandbox settles the questions below.
+  value is refused at start-up (exit 2, before any sandbox starts), and the default stays `sequential` until a run in a real sandbox settles the questions below (#454).
   - `sequential`: the reviewers run one after another on one sandbox, at most `MAX_REVIEWERS_PER_ROUND`, since role runs started together race for the sandbox's global git config lock
     (a real run lost four of ten). A round can take hours against the run's 240-minute budget. `BUILDING_LABEL_MAX_AGE_MS` is sized for that and for the cap (12 hours, so a crashed run, an
     Actions run included, holds its issue that long).
@@ -246,11 +246,17 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
     Each lead run has this timeout, so a round that is cut off and retried in halves may spend up to three of them. A lead that times out or fails ends the round at once with no retry
     (every lens not yet answered in it is reported as failed or timed out, not as a malformed answer); a usage-limit stop or a
     stalled sandbox is rethrown as for a reviewer. The lead's log is never copied to the public report.
-  - What the tests can't settle, and the answer the design takes so that a wrong guess fails loudly instead of recording a clean review: whether the lead's `--tools` narrows its subagents and honours
-    `Agent(name,…)` (the lead holds Read, Grep and Glob itself, each subagent's own `tools` list is its ceiling, and the deny list stays beside the allowlist);
-    whether `--setting-sources user` blocks the branch's `.claude/agents` (the subagents are named by the host and
-    defined on the command line, so they don't depend on it); how one role timeout covers all the subagents (above); and keeping the lead from dropping findings (the wrapper protocol above).
-    A CLI that can't start subagents leaves every lens missing, and the review fails.
+  - Settled against `claude` 2.1.317 (probes with the local CLI, `--setting-sources project`; not yet a full sandbox run):
+    - `--tools 'Agent(lens-1),Read,Grep,Glob'` gives the session no `Agent` tool at all, and a bare `Agent` in `--tools` starts user-level and plugin subagents too
+      (a deny list can't name those). So the lead is defined in `--agents` as `pre-push-review-lead`, with `Agent(lens-1,…)`, Read, Grep and Glob as its own `tools`,
+      and started with `--agent`; no `--tools` is passed. With `--setting-sources project` the probe's lead could start `lens-1` and nothing else
+      (built-in types answered "not found"). `restrictedClaudeCode` builds this, and `LEAD_DENIED_TOOLS` stays beside it.
+    - The lead keeps Read, Grep and Glob (the probed tool set); nothing was dropped, since no run showed one unneeded.
+    - Every lens goes through the lead's relay and the host parses each block (above); no lens runs on its own.
+    - Real sandbox run (`SANDCASTLE_REVIEWERS=subagents SANDCASTLE_ISSUE=392`, PR #456): three rounds of 10, 9 and 9 reviewers each ran as one wave of parallel subagents of one lead.
+      The lead's log has 28 `Agent(Review: …)` calls and 28 relayed `<review-…>` blocks, with no retry, cut-off or failed lens, and the lead's output stayed near 17k tokens.
+    - Still open: an out-of-allowlist request (the log shows none refused), the allowlist with `--setting-sources user` and a user-level or plugin subagent present, and that the lead has no Bash.
+      A CLI that can't start subagents leaves every lens missing, and the review fails.
 - A change to how the host runs the reviewers needs a run against a real sandbox before merging, since the tests stub Docker and see `--tools`, `--agents`, `--strict-mcp-config`,
   `--setting-sources` and `--disallowedTools` only as text. For the `subagents` mode that run is `SANDCASTLE_REVIEWERS=subagents SANDCASTLE_ISSUE=<n> pnpm run sandcastle`, before the default flips.
 

@@ -12,9 +12,10 @@
 // view that fails the check is replaced by a note. This narrows what can leave the sandbox in a log; it
 // can't promise that a steered reviewer cannot get a few words of its own onto an error line.
 // The output folder is emptied before it is written, in case an earlier run left files in it.
-// A reviewer run the host gave up on may still be writing its log, so a copy is a snapshot.
+// A reviewer run the host gave up on may still be writing its log, so a copy is a snapshot. A log is read only as far as its last REPORT_INPUT_LIMIT
+// bytes, since the view keeps the last lines of each kind and the sandbox chooses how long a log is; a view of a longer log starts with the left-out marker.
 
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readdirSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { containsSecret, sandboxSecrets } from "./sandbox-env.mts";
 
@@ -42,6 +43,10 @@ export const REPORT_TOOL_LINES = 30;
 
 // A run of this many token characters in an error line (base64, hex, a key) leaves the line out.
 export const REPORT_TOKEN_RUN = 24;
+
+// The marker the view puts in place of a run of lines it left out, and in front of a log it cut to its last REPORT_INPUT_LIMIT bytes, so a reader
+// can tell a cut log from a quiet one. No count: the number of lines an attacker printed would be data.
+const LEFT_OUT = "[... lines left out]";
 
 // How much of a reviewer log the host reads: its last REPORT_INPUT_LIMIT bytes (characters, in allowlistedView), starting at a whole line. The sandbox writes
 // the log, so its size is the sandbox's choice, and the view keeps only the last lines of each kind, so reading more only costs the host memory in
@@ -110,14 +115,19 @@ function cut(text: string, limit: number): string {
   return /[\uD800-\uDBFF]$/.test(head) && text.length > limit ? head.slice(0, -1) : head;
 }
 
-// The allowlisted view of a reviewer log: its last REPORT_HOST_LINES host status lines and the names of its last REPORT_TOOL_LINES known tool calls, with a
+// The allowlisted view of a reviewer log (of its last REPORT_INPUT_LIMIT characters, from a whole line, behind LEFT_OUT when it was longer): its last REPORT_HOST_LINES host status lines and the names of its last REPORT_TOOL_LINES known tool calls, with a
 // `[... lines left out]` marker (no count) for each run of lines it left out. Of the lines that name an error, the last REPORT_ERROR_LINES
 // are kept as free text cut to REPORT_LINE_LIMIT, unless one holds a run of REPORT_TOKEN_RUN token characters or
 // `held` says it looks like a secret. Model prose, tool arguments and tool output are what it leaves out.
 export function allowlistedView(text: string, held: (line: string) => boolean = () => false): string {
+  // A leading marker line is the host's own, from a log liveRoleLogFs.read cut: it is not counted against the limit, and it stays the marker.
+  const headCut = text.startsWith(`${LEFT_OUT}\n`);
+  const body = headCut ? text.slice(LEFT_OUT.length + 1) : text;
   // One character more than the limit, so a cut that lands on a line break leaves that line whole: the line break is the part dropped.
-  const bounded = text.length > REPORT_INPUT_LIMIT ? fromWholeLine(text.slice(-(REPORT_INPUT_LIMIT + 1))) : text;
-  const lines = bounded.split(/\r?\n/);
+  const over = body.length > REPORT_INPUT_LIMIT;
+  const bounded = over ? fromWholeLine(body.slice(-(REPORT_INPUT_LIMIT + 1))) : body;
+  // The marker counts as a line left out, so the view starts with it whenever anything before the kept lines was dropped.
+  const lines = `${headCut || over ? `${LEFT_OUT}\n` : ""}${bounded}`.split(/\r?\n/);
   const keep = new Array<string | undefined>(lines.length).fill(undefined);
   const errors: number[] = [];
   const hosts: number[] = [];
@@ -139,8 +149,7 @@ export function allowlistedView(text: string, held: (line: string) => boolean = 
   const out: string[] = [];
   let left = 0;
   const flush = () => {
-    // No count: the number of lines an attacker printed between two kept lines would be data.
-    if (left > 0) out.push("[... lines left out]");
+    if (left > 0) out.push(LEFT_OUT);
     left = 0;
   };
   keep.forEach((kept, index) => {
@@ -196,7 +205,7 @@ export const buildLogs = new BuildLogs();
 // or log directory is a warning (a directory that doesn't exist is no logs, and no warning).
 // `secrets` defaults to the values .sandcastle/.env gives the sandbox, read once per call. Returns the names it wrote (`reviewer-<n>.log`), including a log it wrote the note for. Beside them it writes
 // REVIEWER_LOG_INDEX, which says for each number the issue whose build wrote the log (from `builds`), or that the host started no build
-// for it, and whether the view couldn't be copied.
+// for it, and whether the view couldn't be copied. Each log is read only as far as its last REPORT_INPUT_LIMIT bytes (liveRoleLogFs.read).
 export function copyReviewerLogs(
   logsDir: string,
   outDir: string,
@@ -271,10 +280,11 @@ export const liveRoleLogFs: RoleLogFs = {
       throw error;
     }
   },
-  // At most the last REPORT_INPUT_LIMIT bytes, from a whole line. O_NOFOLLOW refuses a symlink put in place after the check above.
+  // At most the last REPORT_INPUT_LIMIT bytes, from a whole line, behind LEFT_OUT when the log was longer. The path is opened, not checked first: a check
+  // leaves a window to swap the entry before the open. O_NOFOLLOW refuses a symlink (ELOOP) and O_NONBLOCK keeps the open of a FIFO from waiting for a
+  // writer (it does nothing to a regular file), so what the open returns is checked by fstat, and a directory, FIFO or device is refused.
   read: (path) => {
-    if (!lstatSync(path).isFile()) throw new Error("not a regular file");
-    const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     try {
       const stat = fstatSync(fd);
       if (!stat.isFile()) throw new Error("not a regular file");
@@ -285,11 +295,12 @@ export const liveRoleLogFs: RoleLogFs = {
       let filled = 0;
       while (filled < buffer.length) {
         const count = readSync(fd, buffer, filled, buffer.length - filled, start + filled);
+        // Zero is a log that shrank after fstat: what was read is what there is. No test reaches it without a race.
         if (count === 0) break;
         filled += count;
       }
       const text = buffer.subarray(0, filled).toString("utf8");
-      return over ? fromWholeLine(text) : text;
+      return over ? `${LEFT_OUT}\n${fromWholeLine(text)}` : text;
     } finally {
       closeSync(fd);
     }

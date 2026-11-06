@@ -282,7 +282,8 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   (not the pre-push review's), as `reviewer-<n>.log` and never under the source's name (an agent chose it), the last host status lines (the start line without its timestamp),
   the last known tool calls' names without arguments (an MCP tool only as `mcp__(...)`) and the last few error lines
   (cut short, and left out when they hold a long run of token characters), and a note in place of a view that looks like a secret. The host reads only the last
-  4 MiB of a log (`REPORT_INPUT_LIMIT`), from a whole line, so a log the sandbox made huge costs the host no more memory than that.
+  4 MiB of a log (`REPORT_INPUT_LIMIT`), from a whole line, so the memory it spends on one log is bounded by that and not by the log's size; the view of a
+  longer log starts with the left-out marker and lacks what came before.
   Beside them it writes `index.txt`: for each number, the issue whose build wrote the log, or that the run started no build for it, and whether the view could
   not be copied. Only an issue number and fixed words go in, never a file name; a log is matched to a build by its name, which an agent that can write the logs
   could choose, so the label is a hint and not proof of where a log came from.

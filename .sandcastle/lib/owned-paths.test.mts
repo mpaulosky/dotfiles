@@ -202,7 +202,7 @@ describe("the globs that exempt a whole folder from the re-Apply review (mpaulos
     assert.deepEqual(unexpected, [], "a file of a new kind under an exempt glob would skip the re-Apply review unseen: name it as a single-file pattern in OWNED_PATHS and classify it (REVIEWED_ON_REAPPLY or EXEMPT_ON_REAPPLY_AUDITED), or widen the entry's `allowed` on purpose");
   });
 
-  it("finds files under every exempt glob, so a `allowed` check isn't vacuous", () => {
+  it("finds files under every exempt glob, so an `allowed` check isn't vacuous", () => {
     const files = filesUnder(owned);
     for (const glob of Object.keys(EXEMPT_GLOBS_AUDITED)) assert.ok(files.some(patternFor(glob)), glob);
   });

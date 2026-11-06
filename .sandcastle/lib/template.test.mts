@@ -176,6 +176,24 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
       const crlf = run();
       assert.equal(crlf.status, 0, `${crlf.stdout}${crlf.stderr}`);
 
+      // Each way a comment or a fence can be written that the reader must get right, by the CommonMark rules for an HTML block and a fence.
+      const reads: [string, string, boolean][] = [
+        ["a comment closed and a second one opened on the same line", section("<!-- a --> text <!-- b\nThe UI files are everything under `src/Web/`."), true],
+        ["a multi-line comment's closing line that opens another", section("<!--\nx --> <!-- y\nThe UI files are everything under `src/Web/`."), true],
+        ["an indented comment", section("   <!-- x -->\nThe UI files are everything under `src/Web/`."), true],
+        ["text after a comment's \"-->\" on its line", section("<!-- x --> The UI files."), true],
+        ["text after the closing line of a multi-line comment", section("<!-- a\nb --> The UI files."), true],
+        ["a code fence closed by a line with trailing spaces", withText("```md\n<!--\n```   "), true],
+        ["a backtick fence a tilde line doesn't close", withText("````md\n<!--\n~~~~\n````"), true],
+        ["a line indented four spaces, which is code", section("    <!-- not a comment"), true],
+        ["a section of only an indented comment", section("  <!-- the UI files go here -->"), false],
+      ];
+      for (const [name, text, passes] of reads) {
+        writeFileSync(rules, text);
+        const result = run();
+        assert.equal(result.status === 0, passes, `${name}: ${result.stdout}${result.stderr}`);
+      }
+
       // A fence that never closes hides the rest of the file, the heading with it.
       writeFileSync(rules, `~~~\n${originals.get(rules)!}`);
       const unclosedFence = run();

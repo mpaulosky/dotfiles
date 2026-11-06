@@ -515,8 +515,8 @@ describe("the PR watcher", () => {
   });
 });
 
-// The text of a Markdown file as a reader sees it, for the one check above: a comment that opens a line (as the Seed's does) is dropped, an unclosed
-// one running to the end of the file; a fenced block is replaced by "X", an unclosed fence too, since it runs to the end; and everything else, a
+// The text of a Markdown file as a reader sees it, for the one check above: a comment that opens a line (as the Seed's does) is dropped up to the
+// line holding its "-->", an unclosed one running to the end of the file; a fenced block is replaced by "X", an unclosed fence too, since it runs to the end; and everything else, a
 // "<!--" inside a code span included, is left as written, so it neither opens a comment nor hides the heading after it. Read line by line, so a "#"
 // line inside a comment or a fence is never taken for a heading.
 function visibleMarkdown(markdown: string): string {
@@ -535,6 +535,7 @@ function visibleMarkdown(markdown: string): string {
       const end = rest.indexOf("-->");
       if (end === -1) continue;
       inComment = false;
+      // The block ends on the line that holds "-->", so a "<!--" after it on that line opens nothing.
       rest = rest.slice(end + 3);
     } else {
       const opener = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
@@ -545,16 +546,19 @@ function visibleMarkdown(markdown: string): string {
         out.push("X");
         continue;
       }
-    }
 
-    if (/^ {0,3}<!--/.test(rest)) {
-      rest = rest.replace(/<!--.*?-->/g, "");
-      const open = rest.indexOf("<!--");
-      if (open !== -1) {
-        inComment = true;
-        rest = rest.slice(0, open);
+      const comment = /^ {0,3}<!--/.exec(line);
+      if (comment) {
+        const end = line.indexOf("-->", comment[0].length);
+        if (end === -1) {
+          inComment = true;
+          rest = "";
+        } else {
+          rest = line.slice(end + 3);
+        }
       }
     }
+
     out.push(rest);
   }
 

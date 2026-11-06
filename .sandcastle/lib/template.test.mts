@@ -121,7 +121,8 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
       assert.match(commentOnly.stdout, /has only a comment/);
 
       // An unclosed comment hides the rest of the file, and a "#" line inside a comment doesn't end the section or leave half a comment behind.
-      const section = (text: string) => originals.get(rules)!.replace(/^## UI developer\n[\s\S]*?(?=^## Build and tests)/m, `## UI developer\n\n${text}\n\n`);
+      const section = (text: string, level = "##") =>
+        originals.get(rules)!.replace(/^## UI developer\n[\s\S]*?(?=^## Build and tests)/m, `${level} UI developer\n\n${text}\n\n`);
       writeFileSync(rules, section("<!-- the UI files are everything under `src/Web/`."));
       const unclosed = run();
       assert.notEqual(unclosed.status, 0, "the check should fail when the section's text is all inside an unclosed comment");
@@ -135,6 +136,23 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
       writeFileSync(rules, section("### Files\n\nThe UI files are everything under `src/Web/`."));
       const subHeading = run();
       assert.equal(subHeading.status, 0, `${subHeading.stdout}${subHeading.stderr}`);
+
+      // The section ends at a heading of its own level or a higher one, read from the heading itself: a level-1 section holds a level-2 sub-heading,
+      // and a level-3 one ends at the next level-2 heading, so a comment under it is all it holds.
+      writeFileSync(rules, section("## Files\n\nThe UI files are everything under `src/Web/`.", "#"));
+      const topLevel = run();
+      assert.equal(topLevel.status, 0, `${topLevel.stdout}${topLevel.stderr}`);
+
+      writeFileSync(rules, section("<!-- the UI files go here -->", "###"));
+      const deepEnds = run();
+      assert.notEqual(deepEnds.status, 0, "the check should fail when a level-3 section holds only a comment before the next level-2 heading");
+      assert.match(deepEnds.stdout, /has only a comment/);
+
+      // An unclosed comment before the heading hides it, which the failure says rather than claiming the heading is missing.
+      writeFileSync(rules, `<!-- unclosed\n\n${originals.get(rules)!.replace(/^(## UI developer\n)/m, "$1\nThe UI files are everything under `src/Web/`.\n")}`);
+      const hidden = run();
+      assert.notEqual(hidden.status, 0, "the check should fail when an unclosed comment hides the heading");
+      assert.match(hidden.stdout, /outside a comment/);
 
       writeFileSync(rules, originals.get(rules)!.replace(/^(## UI developer\n)/m, "$1\nThe UI files are everything under `src/Web/`.\n"));
       const complete = run();

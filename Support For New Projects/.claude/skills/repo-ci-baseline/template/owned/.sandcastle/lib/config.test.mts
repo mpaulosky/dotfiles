@@ -75,7 +75,7 @@ describe("ROLE_AGENTS", () => {
     const rules = readFileSync(file("roles/shared-rules.md"), "utf8").replace(/<!--[\s\S]*?(?:-->|$)/g, "");
     const heading = /^(#{1,6})\s+UI developer\s*$/m.exec(rules);
 
-    assert.ok(heading, 'roles/shared-rules.md has no "## UI developer" section: add one that names the UI files, or the developer and the ui role each leave them to the other');
+    assert.ok(heading, 'roles/shared-rules.md has no "## UI developer" section outside a comment (an unclosed <!-- hides everything after it): add one that names the UI files, or the developer and the ui role each leave them to the other');
 
     const afterHeading = rules.slice(heading.index + heading[0].length);
     const body = (afterHeading.split(new RegExp(`^#{1,${heading[1]!.length}}\\s`, "m"))[0] ?? "").trim();

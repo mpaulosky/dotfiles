@@ -213,8 +213,8 @@ describe("allowlistedView", () => {
     const spaced = [...fillers.map((filler) => `error ${secret.split("").join(filler)}`), `error ${hex}`];
     for (const line of spaced) {
       assert.equal(allowlistedView(line, (candidate) => candidate.includes(secret)), "[error line: error]\n", line);
-      // copy() also holds a line whose characters, once format characters are taken out, spell the secret.
-      assert.match(copy(line, [secret]), /^(?:\[error line: error\]|\[\.\.\. lines left out\])\n$/, line);
+      // copy() also holds a line whose characters, once format characters are taken out, spell the secret: only U+200B (a format character) is.
+      assert.equal(copy(line, [secret]), line.includes("\u200B") ? "[... lines left out]\n" : "[error line: error]\n", line);
     }
     // Plain, the secret is held; its run of token characters would leave the line out anyway.
     assert.equal(allowlistedView(`error ${secret}`, (candidate) => candidate.includes(secret)), "[... lines left out]\n");

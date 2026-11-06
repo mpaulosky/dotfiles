@@ -165,7 +165,8 @@ export function allowlistedView(text: string, held: (line: string) => boolean = 
 
 // Whether the text holds one of the secrets or a token shape, as written or with whitespace and control and format
 // characters taken out (and ANSI colour codes first), so a token printed spaced out or wrapped is whole again for the check. It runs on
-// each log line before an error line is reduced to its fixed message (the `held` callback), and on the finished view as a second check.
+// each error line (one that matched `errorLine` and holds no long run of token characters) before it is reduced to its fixed message (the `held`
+// callback), and on the finished view as a second check.
 function looksLikeSecret(view: string, secrets: readonly string[]): boolean {
   const spaceless = view.replace(/\u001b\[[0-?]*[ -\/]*[@-~]/g, "").replace(/[\s\p{Cc}\p{Cf}\p{M}]/gu, "");
   return [view, spaceless].some((form) => containsSecret(form, secrets) || looseTokenShape.test(form));

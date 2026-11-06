@@ -84,8 +84,10 @@ guardrails keep agent-written code from running on the host. A change keeps ever
   In the `subagents` reviewer mode (`SANDCASTLE_REVIEWERS`) the `pre-push-review-lead` run holds Read, Grep and Glob and an `Agent(lens-1,lens-2,…)` allowlist of the round's lens agents.
   `leadTools` builds the list and it is written as the `tools` of the lead's own `--agents` definition, `pre-push-review-lead`, started with `--agent` and no `--tools`
   (in `--tools` the allowlist would leave the lead no `Agent` tool). `restrictedClaudeCode` enforces it: it refuses a bare `Agent` and any tool beyond Read, Grep and Glob.
-  The name `pre-push-review-lead` is reserved, and `LEAD_DENIED_TOOLS` denies every known built-in subagent type, Bash, Edit, Write, NotebookEdit, WebFetch and WebSearch as further layers.
-  It starts the reviewers as subagents defined on its command line, which hold Read, Grep and Glob only; the lead holds Agent, Read, Grep and Glob and nothing else: no shell, no network and no write tool.
+  The name `pre-push-review-lead` is reserved, and `LEAD_DENIED_TOOLS` denies every known built-in subagent type and the known shell, write, network and spawn tools
+  as further layers (a deny list can't name a later release's tool).
+  It starts the reviewers as subagents defined on its command line, which hold Read, Grep and Glob only; the lead holds Agent, Read, Grep and Glob and nothing else:
+  no shell, no network and no write tool, by its definition's tools and those denials. That the lead holds no Bash under `--agent` is still unprobed (`references/pre-push-review.md`).
 - The sandbox gets no GitHub token (`main.mts` refuses one in `.sandcastle/.env`); the host does every GitHub write.
 - The run report artifact is downloadable by any signed-in user of a public repository and GitHub doesn't mask secrets in it, so it never holds a role's log whole:
   `lib/role-logs.mts` copies only the reviewers' allowlisted view (the last host status lines, the last known tool names without arguments,

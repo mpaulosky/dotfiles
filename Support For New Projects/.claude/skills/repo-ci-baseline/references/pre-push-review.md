@@ -227,8 +227,9 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
     `--agents` (`tools` Read, Grep and Glob; the quoted word is capped at `MAX_AGENTS_WORD_BYTES`, and holds the lead's own definition too) and told to read that file.
     The lead is itself a `--agents` definition, `pre-push-review-lead`, started with `--agent` and no `--tools`: its `tools` are `Agent(lens-1,lens-2,…)` (`leadTools`), Read, Grep and Glob,
     so no shell, no network and no write tool, and `restrictedClaudeCode` refuses a lead whose tools hold anything else, a bare `Agent`, or an allowlist that isn't exactly the defined lenses.
-    The name `pre-push-review-lead` is reserved: a lens can't take it. With no `--tools` to narrow the session, `LEAD_DENIED_TOOLS` also denies Bash, Edit, Write, NotebookEdit, WebFetch and WebSearch,
-    and every known built-in subagent type, as further layers, since a deny list alone can't name a type a later release adds or one from the sandbox user's `~/.claude/agents`.
+    The name `pre-push-review-lead` is reserved: a lens can't take it. With no `--tools` to narrow the session, `LEAD_DENIED_TOOLS` also denies the known shell, write, network and spawn tools (Bash, Monitor,
+    PowerShell, Edit, Write, WebFetch, Skill, Task and the like) and every known built-in subagent type, as further layers, since a deny list alone can't name a tool or type
+    a later release adds or one from the sandbox user's `~/.claude/agents`. `restrictedClaudeCode` also refuses a lead without those denials, `--strict-mcp-config` and `--setting-sources user`.
   - The lead returns each subagent's `<findings>` block verbatim (the subagent is told to answer with that block only, so up to 14 relayed answers stay within the lead's output limit)
     between `<review-{nonce}-{id}>` and `</review-{nonce}-{id}>`, with a nonce the host makes fresh for each lead run
     (defence in depth only: the lead's prompt holds it and may be saved where a subagent's Read could reach it,
@@ -255,8 +256,8 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
       (built-in types answered "not found"). `restrictedClaudeCode` builds this, and `LEAD_DENIED_TOOLS` stays beside it.
     - The lead keeps Read, Grep and Glob (the probed tool set); nothing was dropped, since no run showed one unneeded.
     - Every lens goes through the lead's relay and the host parses each block (above); no lens runs on its own.
-    - Real sandbox run (`SANDCASTLE_REVIEWERS=subagents SANDCASTLE_ISSUE=392`, PR #456), which used this `--agent` command shape but not yet the Bash, Edit, Write, NotebookEdit, WebFetch and WebSearch
-      denials: three rounds of 10, 9 and 9 reviewers each ran as one wave of parallel subagents of one lead.
+    - Real sandbox run (`SANDCASTLE_REVIEWERS=subagents SANDCASTLE_ISSUE=392`, PR #456), which used this `--agent` command shape
+      but not yet the shell, write, network and spawn tool denials: three rounds of 10, 9 and 9 reviewers each ran as one wave of parallel subagents of one lead.
       The lead's log has 28 `Agent(Review: …)` calls and 28 relayed `<review-…>` blocks, with no retry, cut-off or failed lens, and the lead's output stayed near 17k tokens.
     - Still open, and the default doesn't flip before they are settled: a refused out-of-allowlist request in a sandbox run (the local probe refused built-in types, and the run's log shows none refused),
       the allowlist under `--setting-sources user` with a user-level or plugin subagent present, and that the lead holds no Bash under `--agent`. Until then "no shell, no network, no write tool"

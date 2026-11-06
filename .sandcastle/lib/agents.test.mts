@@ -439,13 +439,13 @@ describe("the pre-push review lead role", () => {
   });
 });
 
-describe("LEAD_DENIED_TOOLS beside the lead's definition", () => {
-  it("also denies every tool the lead must not hold, so a lead that starts without its definition's tools still has no shell, network or write tool", () => {
-    for (const tool of ["Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"]) assert.ok(LEAD_DENIED_TOOLS.includes(tool), `${tool} isn't denied`);
-  });
-});
-
 describe("LEAD_DENIED_TOOLS", () => {
+  // A deny list can't name a tool a later release adds, so this is a second layer behind the definition's tools, not a guarantee.
+  it("also denies the known shell, write, network and spawn tools, so a lead that starts without its definition's tools is still held back from them", () => {
+    const known = ["Bash", "BashOutput", "KillShell", "Monitor", "PowerShell", "Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Skill", "EnterWorktree", "Task"];
+    for (const tool of known) assert.ok(LEAD_DENIED_TOOLS.includes(tool), `${tool} isn't denied`);
+  });
+
   it("holds the ledger deny list and denies every built-in subagent type, so the lead starts only the lens-<id> agents defined for it", () => {
     for (const rule of LEDGER_DENIED_TOOLS) assert.ok(LEAD_DENIED_TOOLS.includes(rule), rule);
     for (const type of ["general-purpose", "Explore", "Plan", "statusline-setup", "claude-code-guide", "output-style-setup"]) {
@@ -548,8 +548,10 @@ describe("restrictedClaudeCode's --agents", () => {
     const withTools = (tools: readonly string[]) => () => restrictedClaudeCode("sonnet", "high", { ...lead, tools, agents });
 
     assert.doesNotThrow(withTools(leadTools(["lens-1"])));
-    for (const extra of ["Bash", "Edit", "Write", "WebFetch", "WebSearch", "NotebookEdit", "Bash(git status)", "mcp__x__y"]) {
-      assert.throws(withTools([...leadTools(["lens-1"]), extra]), /tool/i, extra);
+    // Anything that isn't exactly Agent(...) or one of the reviewers' own tools lands in the refusal, an odd spelling of Agent and a scoped Read among them.
+    const extras = ["Bash", "Edit", "Write", "WebFetch", "WebSearch", "NotebookEdit", "Bash(git status)", "mcp__x__y", "Task", "Agent (lens-1)", "agent", "AgentFoo", "Read(//**)", ""];
+    for (const extra of extras) {
+      assert.throws(withTools([...leadTools(["lens-1"]), extra]), /may hold only Agent\(\.\.\.\) and Read, Grep, Glob/, JSON.stringify(extra));
     }
   });
 
@@ -580,8 +582,22 @@ describe("restrictedClaudeCode's --agents", () => {
     for (const restrictions of [lead, { tools: REVIEWER_TOOLS }]) assert.ok(!wordsOf(commandOf(restrictions)).includes("--agent"));
   });
 
-  it("applies --agents even when the Agent allowlist is its only companion", () => {
-    assert.ok(wordsOf(commandOf({ tools: leadTools(["lens-1"]), agents: { "lens-1": definition() } })).includes("--agents"));
+  it("applies --agents with the lead's required companions", () => {
+    assert.ok(wordsOf(commandOf(leadFor({ "lens-1": definition() }))).includes("--agents"));
+  });
+
+  it("refuses subagents without the layers that back the lead's definition: its denied tools, strict MCP and the user's settings only", () => {
+    const agents = { "lens-1": definition() };
+    const build = (restrictions: Partial<typeof lead>) => () => restrictedClaudeCode("sonnet", "high", { ...lead, tools: leadTools(["lens-1"]), agents, ...restrictions });
+
+    assert.doesNotThrow(build({}));
+    assert.throws(build({ denied: undefined }), /must also/);
+    assert.throws(build({ denied: [] }), /must also/);
+    for (const rule of LEAD_DENIED_TOOLS) assert.throws(build({ denied: LEAD_DENIED_TOOLS.filter((one) => one !== rule) }), /must also/, rule);
+    assert.throws(build({ strictMcp: false }), /must also/);
+    assert.throws(build({ strictMcp: undefined }), /must also/);
+    assert.throws(build({ userSettingsOnly: false }), /must also/);
+    assert.throws(build({ userSettingsOnly: undefined }), /must also/);
   });
 
   // The restrictions with the lead's tools written by hand, so leadTools' own validation is not in the way and only agentsJson can refuse a name or an empty set.

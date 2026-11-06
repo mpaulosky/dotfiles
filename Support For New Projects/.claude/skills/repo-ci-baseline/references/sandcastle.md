@@ -279,18 +279,30 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   and a Claude credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Without the token every step but the first is skipped, so a repo that runs Sandcastle only
   locally gets a green run with a notice on every trigger the sandcastle job's `if:` lets through, not a failure every two hours. With the token but no Claude credential the run fails.
 - **The run report artifact holds an allowlisted view of the reviewers' logs, never a whole log.** `lib/role-logs.mts` writes, for each `*-reviewer.log`
-  (not the pre-push review's), as `reviewer-<n>.log` and never under the source's name (an agent chose it), the last host status lines (the start line without its timestamp),
-  the last known tool calls' names without arguments (an MCP tool only as `mcp__(...)`) and the last few error lines
-  (cut short, and left out when they hold a long run of token characters), and a note in place of a view that looks like a secret.
-  Beside them it writes `index.txt`: for each number, the issue whose build wrote the log, or that the run started no build for it, and whether the view could
-  not be copied. Only an issue number and fixed words go in, never a file name; a log is matched to a build by its name, which an agent that can write the logs
-  could choose, so the label is a hint and not proof of where a log came from.
+  (not the pre-push review's), as `reviewer-<n>.log` and never under the source's name (an agent chose it),
+  three sorted sets of fixed lines, not a sequence: the host status lines that appeared (every number masked as `#`, the start line without its timestamp),
+  the known tools called, by name without arguments (an MCP tool only as `mcp__(...)`), and the error words that appeared, each as a fixed message
+  (`[error line: timed out]`), never the line's own text (a line holding a long run of token characters is no error line); one `[... lines left out]` line comes first when the log held
+  anything else, and a note takes the place of a view that looks like a secret. Order, count and place carry nothing. The host reads only the last
+  4 MiB of a log (`REPORT_INPUT_LIMIT`), from a whole line, so the memory it spends on one log is bounded by that and not by the log's size; the view of a
+  longer log starts with the left-out marker and lacks what came before. Only the logs of builds the run started are copied, at most `REPORT_LOG_LIMIT` (20) of them by sorted name: a sandbox that
+  can write the logs folder could add files of its own, and copying them would multiply the residue below by a number it picks.
+  Beside them it writes `index.txt`: for each number, the issue whose build wrote the log and whether the view could not be copied, then one fixed line (no count) for more such logs
+  than the limit and one for other `*-reviewer.log` files in the folder. Only an issue number and fixed words go in, never a file name; the host matches a log to its build by the name
+  it gave it.
   A run with no `*-reviewer.log` to copy has no `reviewer-logs/` folder and no `index.txt` in its report, and the copy step says nothing:
   a run that starts no role (the planner alone) leaves none, with no `.sandcastle/logs` at all on Actions,
   and so does one whose logs are only a non-reviewer role's and the pre-push review's. An absent folder is normal.
+  A logs folder that holds `*-reviewer.log` files but none that a build of this run wrote (logs left by earlier local runs, or files a sandbox added) gets an `index.txt`
+  with its one fixed line and no views.
   On Actions the whole report folder (`summary.md`, `handbacks.json`, `reviewer-logs/`) is `$RUNNER_TEMP/sandcastle-report/`, outside the checkout, because a head-mode sandbox mounts
   the main checkout and one the host gave up on may keep running; the workflow uploads it and the `Fail on hand-backs` step reads `handbacks.json` from it.
-  This narrows what a steered reviewer can print into the artifact; it can't promise that a few words on an error line stay out.
+  This keeps free text and numbers out of the artifact. What a steered reviewer can still choose is which fixed lines appear: about 30 host kinds, 15 tools and 26 error words,
+  one bit each, so about 72 bits in the log of each build the run recorded, and a few bits more in `index.txt` (whether a copy failed, whether a view was held). A sandbox that can write
+  the logs folder (a head-mode sandbox mounts the checkout) can set the content of the log of any recorded build, not only its own, so the bound is about 72 bits for each
+  recorded build, at most 20 of them. A token of 40 characters is about 240 bits, so it fits in the logs of a handful of builds; that residue, a steered sandbox with write access
+  to the logs folder, is accepted and is the most the artifact can carry.
+  A line holding a long run of token characters, or one the secret check holds, is left out whole and leaves no message.
   An artifact of a public repository is downloadable by any signed-in user and GitHub doesn't mask secrets in it.
   After a role fails (a developer, the reviewer, the scribe, the gate-fixer, or a follow-up pass's follow-up role or gate-fixer; not for a usage-limit
   or time-budget stop), or before a checkpoint's gate, the host logs the sandbox's disk, memory, processes, zombies, the limits on forking

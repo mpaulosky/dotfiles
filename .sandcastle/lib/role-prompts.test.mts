@@ -372,6 +372,13 @@ describe("the Template's Seed prompts", () => {
     assert.equal(readFileSync(seed).length, 0);
   });
 
+  it("gives the yamllint command roles/tester.md sends the tester to, with the config the Template ships at the repo root", () => {
+    const rules = readFileSync(new URL("roles/shared-rules.md", seedSandcastle), "utf8");
+
+    assert.match(read("roles/tester.md"), /the command is in the rules below/);
+    assert.match(rules, /`yamllint -c \.yamllint\.yml <file>`/);
+  });
+
   it("points every role at what a repo adds, in roles/shared-rules.md: CONTEXT.md and .claude/rules/ where present, and the UI developer's files", () => {
     const rules = readFileSync(new URL("roles/shared-rules.md", seedSandcastle), "utf8");
 

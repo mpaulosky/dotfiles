@@ -94,8 +94,9 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
   // config.test.mts skips its check of the ui prompts in a repo that hasn't opted in, which is every config this repo runs it under, so
   // here it runs where it can fail: a scratch repo with the Seed's ui entry uncommented. The role is Owned and opt-in
   // (mpaulosky/dotfiles#392), so the Template's own prompts pass it as shipped, and it fails when roles/ui.md, the planner's {{UI_ROLE}} or
-  // backend.md's {{UI_DEVELOPER}} is missing, or the repo's roles/shared-rules.md has no UI developer section for them to point at.
-  it("passes config.test.mts's ui prompt check for an opted-in repo as the Template ships, and fails it without roles/ui.md, plan-prompt.md's {{UI_ROLE}}, backend.md's {{UI_DEVELOPER}} or a UI developer section in roles/shared-rules.md", { timeout: 120_000 }, () => {
+  // backend.md's {{UI_DEVELOPER}} is missing, or the repo's roles/shared-rules.md has no UI developer section for them to point at, or one that holds only a comment
+  // (the Seed's state), and it passes when sub-headings are all the section holds.
+  it("passes config.test.mts's ui prompt check for an opted-in repo as the Template ships, and fails it without roles/ui.md, plan-prompt.md's {{UI_ROLE}}, backend.md's {{UI_DEVELOPER}} or a UI developer section with text in roles/shared-rules.md", { timeout: 120_000 }, () => {
     const config = join(sandcastle, "lib/repo-config.mts");
     const plan = join(sandcastle, "plan-prompt.md");
     const uiPrompt = join(sandcastle, "roles/ui.md");
@@ -111,8 +112,117 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     const failedCheck = /✖[^\n]*has the prompts the ui role needs/;
 
     try {
+      // A repo that opts in names its UI files under the heading; the Seed ships only a comment there, which must fail until it does.
       writeFileSync(config, optedIn);
 
+      const commentOnly = run();
+      assert.notEqual(commentOnly.status, 0, "the check should fail while the UI developer section is only the Seed's comment");
+      assert.match(commentOnly.stdout, failedCheck);
+      assert.match(commentOnly.stdout, /has only a comment/);
+
+      // An unclosed comment hides the rest of the file, and a "#" line inside a comment doesn't end the section or leave half a comment behind.
+      const section = (text: string, level = "##") =>
+        originals.get(rules)!.replace(/^## UI developer\n[\s\S]*?(?=^## Build and tests)/m, `${level} UI developer\n\n${text}\n\n`);
+      writeFileSync(rules, section("<!-- the UI files are everything under `src/Web/`."));
+      const unclosed = run();
+      assert.notEqual(unclosed.status, 0, "the check should fail when the section's text is all inside an unclosed comment");
+      assert.match(unclosed.stdout, /has only a comment/);
+
+      writeFileSync(rules, section("<!-- note\n# not a heading -->"));
+      const hashInComment = run();
+      assert.notEqual(hashInComment.status, 0, "the check should fail when a comment holds a line that starts with #");
+      assert.match(hashInComment.stdout, /has only a comment/);
+
+      writeFileSync(rules, section("### Files\n\nThe UI files are everything under `src/Web/`."));
+      const subHeading = run();
+      assert.equal(subHeading.status, 0, `${subHeading.stdout}${subHeading.stderr}`);
+
+      // The section ends at a heading of its own level or a higher one, read from the heading itself: a level-1 section holds a level-2 sub-heading,
+      // and a level-3 one ends at the next level-2 heading, so a comment under it is all it holds.
+      writeFileSync(rules, section("## Files\n\nThe UI files are everything under `src/Web/`.", "#"));
+      const topLevel = run();
+      assert.equal(topLevel.status, 0, `${topLevel.stdout}${topLevel.stderr}`);
+
+      writeFileSync(rules, section("<!-- the UI files go here -->", "###"));
+      const deepEnds = run();
+      assert.notEqual(deepEnds.status, 0, "the check should fail when a level-3 section holds only a comment before the next level-2 heading");
+      assert.match(deepEnds.stdout, /has only a comment/);
+
+      // A literal "<!--" in a code span or a fenced block ahead of the section is text, not a comment: the section still counts.
+      const withText = (before: string) => originals.get(rules)!.replace(/^(## UI developer\n)/m, "$1\nThe UI files are everything under `src/Web/`.\n").replace(/^## UI developer\n/m, `${before}\n\n## UI developer\n`);
+      writeFileSync(rules, withText("Write `<!--` to open a comment."));
+      const spanOpener = run();
+      assert.equal(spanOpener.status, 0, `${spanOpener.stdout}${spanOpener.stderr}`);
+
+      writeFileSync(rules, withText("```md\n<!--\n```"));
+      const fenceOpener = run();
+      assert.equal(fenceOpener.status, 0, `${fenceOpener.stdout}${fenceOpener.stderr}`);
+
+      // A tilde fence, and a four-backtick one an inner three-backtick line doesn't close, hold a "<!--" the same way.
+      writeFileSync(rules, withText("~~~\n<!--\n~~~"));
+      const tildeOpener = run();
+      assert.equal(tildeOpener.status, 0, `${tildeOpener.stdout}${tildeOpener.stderr}`);
+
+      writeFileSync(rules, withText("````md\n```\n<!--\n```\n````"));
+      const longFenceOpener = run();
+      assert.equal(longFenceOpener.status, 0, `${longFenceOpener.stdout}${longFenceOpener.stderr}`);
+
+      // A section made only of a fenced block has text, and CRLF line endings read the same as LF.
+      writeFileSync(rules, section("```\nsrc/Web/\n```"));
+      const fenceBody = run();
+      assert.equal(fenceBody.status, 0, `${fenceBody.stdout}${fenceBody.stderr}`);
+
+      writeFileSync(rules, withText("```md\n<!--\n```").replace(/\n/g, "\r\n"));
+      const crlf = run();
+      assert.equal(crlf.status, 0, `${crlf.stdout}${crlf.stderr}`);
+
+      // Each way a comment or a fence can be written that the reader must get right, by the CommonMark rules for an HTML block and a fence.
+      // A row that passes names text that only survives when the reader gets its case right: a comment ahead of the heading that opened wrongly would
+      // hide the heading. The row that fails names the message it must fail with.
+      const reads: [string, string, boolean, RegExp?][] = [
+        ["a comment closed and a second one opened on the same line, ahead of the heading", withText("<!-- a --> <!-- b"), true],
+        ["a multi-line comment's closing line that opens another, ahead of the heading", withText("<!--\nx --> <!-- y"), true],
+        ["a comment that is only \"<!-->\", ahead of the heading", withText("<!-->"), true],
+        ["text after a comment's \"-->\" on its line", section("<!-- x --> The UI files."), true],
+        ["text after the closing line of a multi-line comment", section("<!-- a\nb --> The UI files."), true],
+        ["a code fence closed by a line with trailing spaces", withText("```md\n<!--\n```   "), true],
+        ["a backtick fence a tilde line doesn't close", withText("````md\n<!--\n~~~~\n````"), true],
+        ["a line indented four spaces, which is code", section("    <!-- not a comment"), true],
+        ["a section of only an indented comment", section("  <!-- the UI files go here -->"), false],
+        ["an unclosed fence holding text as the section's last content", section("```\nsrc/Web/").replace(/\n\n(?=## Build and tests)/, ""), true],
+        ["a multi-line comment indented three spaces, with no other text", section("  <!-- the UI files\ngo here -->"), false],
+        ["an indented fence holding a comment opener, ahead of the heading", withText("  ```\n<!--\n  ```"), true],
+        ["a heading indented one space", section("The UI files.").replace(/^## UI developer/m, " ## UI developer"), true],
+        ["a heading indented four spaces, which is code", section("The UI files.").replace(/^## UI developer/m, "    ## UI developer"), false, /has no "## UI developer" section/],
+        ["a comment-only section followed by an indented sibling heading", section("<!-- x -->").replace(/^## Build and tests/m, "  ## Build and tests"), false],
+        ["a section of only an empty fenced block", section("```\n\n```"), false],
+        ["a section of only a whitespace fenced block", section("~~~\n   \n~~~"), false],
+        ["a section of only two comments on one line", section("<!-- UI files --> <!-- TODO -->"), false],
+        ["a section of a comment closed with a second comment after it, then text", section("<!-- a --> <!-- b -->\nThe UI files."), true],
+      ];
+      for (const [name, text, passes, message = /has only a comment/] of reads) {
+        writeFileSync(rules, text);
+        const result = run();
+        assert.equal(result.status === 0, passes, `${name}: ${result.stdout}${result.stderr}`);
+        if (!passes) {
+          assert.match(result.stdout, failedCheck, name);
+          assert.match(result.stdout, message, name);
+        }
+      }
+
+      // A fence that never closes hides the rest of the file, the heading with it.
+      writeFileSync(rules, `~~~\n${originals.get(rules)!}`);
+      const unclosedFence = run();
+      assert.notEqual(unclosedFence.status, 0, "the check should fail when an unclosed fence hides the heading");
+      assert.match(unclosedFence.stdout, /unclosed code fence/);
+
+      // An unclosed comment before the heading hides it, which the failure says rather than claiming the heading is missing.
+      writeFileSync(rules, `<!-- unclosed\n\n${originals.get(rules)!.replace(/^(## UI developer\n)/m, "$1\nThe UI files are everything under `src/Web/`.\n")}`);
+      const hidden = run();
+      assert.notEqual(hidden.status, 0, "the check should fail when an unclosed comment hides the heading");
+      assert.match(hidden.stdout, /outside a comment/);
+
+      writeFileSync(rules, originals.get(rules)!.replace(/^(## UI developer\n)/m, "$1\nThe UI files are everything under `src/Web/`.\n"));
       const complete = run();
       assert.equal(complete.status, 0, `${complete.stdout}${complete.stderr}`);
       assert.match(complete.stdout, /✔[^\n]*has the prompts the ui role needs/, "the check should run and pass, not be skipped");

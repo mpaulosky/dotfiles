@@ -713,6 +713,20 @@ describe("the docs of the Owned role prompts (mpaulosky/dotfiles#392)", () => {
     assert.match(text, /REVIEWED_ON_REAPPLY[\s\S]*?review-prompt\.md/);
   });
 
+  it("records the subagents mode's real run and allowlist probe in references/pre-push-review.md (mpaulosky/dotfiles#454)", () => {
+    const text = readFileSync(join(skill, "references/pre-push-review.md"), "utf8").replace(/\s+/g, " ");
+
+    assert.match(text, /Real sandbox run with the extended tool denials/);
+    assert.match(text, /27 `Agent\(Review: …\)` calls \(nine a round\) and no call to any other tool/);
+    assert.match(text, /Allowlist probe \(local `claude` 2\.1\.317/);
+    assert.match(text, /started `lens-1` and nothing else/);
+    assert.match(text, /user-level agent and the plugin agent were all `not found\. Available agents: lens-1`/);
+    assert.match(text, /The lead had no Bash tool either way/);
+    assert.match(text, /a plugin agent from an installed marketplace plugin/);
+    assert.match(text, /a refused out-of-allowlist request in a sandbox run/);
+    assert.match(text, /`Write\(\/\/\*\*\/\.git\/review…\)` rules in `LEDGER_DENIED_TOOLS`/);
+  });
+
   it("says in references/pre-push-review.md that the workflows, hooks, scripts and lib/ stay exempt on a re-Apply, and that a new Owned file is exempt only by a decision (mpaulosky/dotfiles#394)", () => {
     const text = readFileSync(join(skill, "references/pre-push-review.md"), "utf8");
 

@@ -267,7 +267,7 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
     Each lead run has this timeout, so a round that is cut off and retried in halves may spend up to three of them. A lead that times out or fails ends the round at once with no retry
     (every lens not yet answered in it is reported as failed or timed out, not as a malformed answer); a usage-limit stop or a
     stalled sandbox is rethrown as for a reviewer. The lead's log is never copied to the public report.
-  - Settled against `claude` 2.1.317 (probes with the local CLI under `--setting-sources project`, then one real sandbox run):
+  - Settled against `claude` 2.1.317 (probes with the local CLI under `--setting-sources project` and `user`, then two real sandbox runs):
     - `--tools 'Agent(lens-1),Read,Grep,Glob'` gives the session no `Agent` tool at all, and a bare `Agent` in `--tools` starts user-level and plugin subagents too
       (a deny list can't name those). So the lead is defined in `--agents` as `pre-push-review-lead`, with `Agent(lens-1,…)`, Read, Grep and Glob as its own `tools`,
       and started with `--agent`; no `--tools` is passed. With `--setting-sources project` the probe's lead could start `lens-1` and nothing else
@@ -275,12 +275,23 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
     - The lead keeps Read, Grep and Glob (the probed tool set); nothing was dropped, since no run showed one unneeded.
     - Every lens goes through the lead's relay and the host parses each block (above); no lens runs on its own.
     - Real sandbox run (`SANDCASTLE_REVIEWERS=subagents SANDCASTLE_ISSUE=392`, PR #456), which used this `--agent` command shape
-      but not yet the extended tool denials (so no run has shown the lead still starts its lenses with the full deny list):
+      but not yet the extended tool denials (the run after this one has them):
       three rounds of 10, 9 and 9 reviewers each ran as one wave of parallel subagents of one lead.
       The lead's log has 28 `Agent(Review: …)` calls and 28 relayed `<review-…>` blocks, with no retry, cut-off or failed lens, and the lead's output stayed near 17k tokens.
-    - Still open, and the default doesn't flip before they are settled: a refused out-of-allowlist request in a sandbox run (the local probe refused built-in types, and the run's log shows none refused),
-      the allowlist under `--setting-sources user` with a user-level or plugin subagent present, and that the lead holds no Bash under `--agent`. Until then "no shell, no network, no write tool"
-      rests on the definition's tools and on the denials above. A CLI that can't start subagents leaves every lens missing, and the review fails.
+    - Real sandbox run with the extended tool denials (`SANDCASTLE_REVIEWERS=subagents SANDCASTLE_LABEL=Sandcastle:local`, issue #462, PR #463): three rounds of 9 reviewers each ran as one wave of
+      parallel subagents of one lead. The lead's log has 27 `Agent(Review: …)` calls (nine a round) and no call to any other tool, and no failed lens. The backend role that fixed round 3's
+      findings crashed (`claude-code` exit 134, per the host's log), so that PR was published without a recorded review; the lead was not involved.
+    - Allowlist probe (local `claude` 2.1.317, the lead's own flags: `--agents` with `Agent(lens-1)`, `--agent`, `--strict-mcp-config`, `--setting-sources user`, and a user-level agent in
+      `~/.claude/agents`, a plugin agent from `--plugin-dir` and an `--agents` agent outside the allowlist present). The lead started `lens-1` and nothing else. With the full deny list
+      the built-in types `general-purpose` and `Explore` were refused by their deny rules, and with no deny list at all by the allowlist itself (`not found. Available agents: lens-1`). The
+      `--agents` agent outside the allowlist, the user-level agent and the plugin agent were all `not found. Available agents: lens-1`, with or without the deny list. The lead had no Bash
+      tool either way, so "no Bash" rests on the definition's tools first and on the denials second (PowerShell, Monitor and the network and write tools were not tried one by one).
+    - Still open, and the default doesn't flip before they are settled: a plugin agent from an installed marketplace plugin (the probe used `--plugin-dir`; the one plugin installed on the
+      probing machine ships no agent), a refused out-of-allowlist request in a sandbox run (the probe refused them locally; the real runs' logs show none attempted), and the ledger denials.
+      On the ledger denials the CLI warns that `Write(//**/.git/review…)` rules in `LEDGER_DENIED_TOOLS` are not matched by file permission checks (it says only `Edit(path)` rules are, and
+      that they cover every file-editing tool), and that the bare `MultiEdit` in `LEAD_NEVER_TOOLS` matches no known tool. The read-only mount over `.git/review` and the lead's tools are
+      the boundary and these rules are a convenience on top, so settle them by confirming the `Edit` rules cover writes or by dropping the inert entries.
+      A CLI that can't start subagents leaves every lens missing, and the review fails.
 - A change to how the host runs the reviewers needs a run against a real sandbox before merging, since the tests stub Docker and see `--tools`, `--agents`, `--strict-mcp-config`,
   `--setting-sources` and `--disallowedTools` only as text. For the `subagents` mode that run is `SANDCASTLE_REVIEWERS=subagents SANDCASTLE_ISSUE=<n> pnpm run sandcastle`, before the default flips.
 

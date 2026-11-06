@@ -832,7 +832,7 @@ export function readSkillFiles(checkout: string = process.cwd()): SkillFiles {
 //
 // With the "subagents" reviewer mode (SANDCASTLE_REVIEWERS, lib/config.mts#reviewerMode) the host also has `runReviewerTeam`: one lead run in
 // the sandbox starts a round's reviewers as parallel subagents, defined on its command line (`--agents`, named lens-<id>, Read/Grep/Glob only).
-// The lead is itself defined in `--agents` and started with `--agent`; it holds Read, Grep and Glob and an `Agent` tool limited to the round's lens-<id> agents (leadTools): no shell, no network and no write tool by its definition's tools and the denials (that it holds no Bash under `--agent` is still unprobed: references/pre-push-review.md). In the "sequential" mode `runReviewerTeam` is absent.
+// The lead is itself defined in `--agents` and started with `--agent`; it holds Read, Grep and Glob and an `Agent` tool limited to the round's lens-<id> agents (leadTools): no shell, no network and no write tool by its definition's tools and the denials (in a local probe it held no Bash tool with and without the deny list; what the probes left open is in references/pre-push-review.md). In the "sequential" mode `runReviewerTeam` is absent.
 export function liveReviewHost(args: LocalReviewArgs, checkout: string = process.cwd()): HostReviewHost {
   const { sandbox, issue, main, limits } = args;
   const subagents = (args.reviewerMode ?? reviewerMode()) === "subagents";

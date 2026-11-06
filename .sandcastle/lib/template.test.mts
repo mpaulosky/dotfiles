@@ -111,8 +111,15 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     const failedCheck = /✖[^\n]*has the prompts the ui role needs/;
 
     try {
+      // A repo that opts in names its UI files under the heading; the Seed ships only a comment there, which must fail until it does.
       writeFileSync(config, optedIn);
 
+      const commentOnly = run();
+      assert.notEqual(commentOnly.status, 0, "the check should fail while the UI developer section is only the Seed's comment");
+      assert.match(commentOnly.stdout, failedCheck);
+      assert.match(commentOnly.stdout, /has only a comment/);
+
+      writeFileSync(rules, originals.get(rules)!.replace(/^(## UI developer\n)/m, "$1\nThe UI files are everything under `src/Web/`.\n"));
       const complete = run();
       assert.equal(complete.status, 0, `${complete.stdout}${complete.stderr}`);
       assert.match(complete.stdout, /✔[^\n]*has the prompts the ui role needs/, "the check should run and pass, not be skipped");

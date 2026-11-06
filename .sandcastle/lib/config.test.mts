@@ -67,12 +67,17 @@ describe("ROLE_AGENTS", () => {
     assert.match(readFileSync(file("roles/backend.md"), "utf8"), /\{\{UI_DEVELOPER\}\}/);
     assert.match(readFileSync(file("plan-prompt.md"), "utf8"), /\{\{UI_ROLE\}\}/, "plan-prompt.md is missing {{UI_ROLE}}, where the host puts the planner's ui bullet");
     // The planner's bullet, backend.md and roles/ui.md all send the reader to the shared rules for which files are the UI developer's. The file is
-    // the repo's own Seed, so only the section's heading is checked, not its wording.
-    assert.match(
-      readFileSync(file("roles/shared-rules.md"), "utf8"),
-      /^#{1,6}\s+UI developer\s*$/m,
-      'roles/shared-rules.md has no "## UI developer" section: add one that names the UI files, or the developer and the ui role each leave them to the other',
-    );
+    // the repo's own Seed, so only that the section exists and has text of its own is checked, not its wording: the Seed ships the heading with
+    // only a comment under it, which a repo that opted in and edited nothing must not pass.
+    const rules = readFileSync(file("roles/shared-rules.md"), "utf8");
+    const heading = /^#{1,6}\s+UI developer\s*$/m.exec(rules);
+
+    assert.ok(heading, 'roles/shared-rules.md has no "## UI developer" section: add one that names the UI files, or the developer and the ui role each leave them to the other');
+
+    const afterHeading = rules.slice(heading.index + heading[0].length);
+    const body = (afterHeading.split(/^#{1,6}\s/m)[0] ?? "").replace(/<!--[\s\S]*?-->/g, "").trim();
+
+    assert.notEqual(body, "", 'roles/shared-rules.md\'s "## UI developer" section has only a comment: replace it with the UI files the ui role builds');
   });
 });
 

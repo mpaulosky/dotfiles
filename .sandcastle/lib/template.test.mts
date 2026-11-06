@@ -716,4 +716,13 @@ describe("the docs of the Owned role prompts (mpaulosky/dotfiles#392)", () => {
     assert.match(text, /owned-paths\.test\.mts/);
     assert.match(text, /exempt only by a decision/);
   });
+
+  it("says in references/pre-push-review.md that a re-Apply reviews main.mts and status.mts, and that a person starts the hardening reviewers (mpaulosky/dotfiles#462)", () => {
+    const text = readFileSync(join(skill, "references/pre-push-review.md"), "utf8");
+
+    assert.doesNotMatch(text, /status\.mts[^.]*stay exempt/);
+    assert.doesNotMatch(text, /they stay exempt for now/);
+    assert.match(text, /REVIEWED_ON_REAPPLY[\s\S]*?`(\.sandcastle\/)?main\.mts`[\s\S]*?`(\.sandcastle\/)?status\.mts`[\s\S]*?needs a review like any other change/);
+    assert.match(text, /hardening-review[\s\S]*?a person (starts|launches)/);
+  });
 });

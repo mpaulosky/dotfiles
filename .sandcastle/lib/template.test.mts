@@ -158,6 +158,30 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
       const fenceOpener = run();
       assert.equal(fenceOpener.status, 0, `${fenceOpener.stdout}${fenceOpener.stderr}`);
 
+      // A tilde fence, and a four-backtick one an inner three-backtick line doesn't close, hold a "<!--" the same way.
+      writeFileSync(rules, withText("~~~\n<!--\n~~~"));
+      const tildeOpener = run();
+      assert.equal(tildeOpener.status, 0, `${tildeOpener.stdout}${tildeOpener.stderr}`);
+
+      writeFileSync(rules, withText("````md\n```\n<!--\n```\n````"));
+      const longFenceOpener = run();
+      assert.equal(longFenceOpener.status, 0, `${longFenceOpener.stdout}${longFenceOpener.stderr}`);
+
+      // A section made only of a fenced block has text, and CRLF line endings read the same as LF.
+      writeFileSync(rules, section("```\nsrc/Web/\n```"));
+      const fenceBody = run();
+      assert.equal(fenceBody.status, 0, `${fenceBody.stdout}${fenceBody.stderr}`);
+
+      writeFileSync(rules, withText("```md\n<!--\n```").replace(/\n/g, "\r\n"));
+      const crlf = run();
+      assert.equal(crlf.status, 0, `${crlf.stdout}${crlf.stderr}`);
+
+      // A fence that never closes hides the rest of the file, the heading with it.
+      writeFileSync(rules, `~~~\n${originals.get(rules)!}`);
+      const unclosedFence = run();
+      assert.notEqual(unclosedFence.status, 0, "the check should fail when an unclosed fence hides the heading");
+      assert.match(unclosedFence.stdout, /unclosed code fence/);
+
       // An unclosed comment before the heading hides it, which the failure says rather than claiming the heading is missing.
       writeFileSync(rules, `<!-- unclosed\n\n${originals.get(rules)!.replace(/^(## UI developer\n)/m, "$1\nThe UI files are everything under `src/Web/`.\n")}`);
       const hidden = run();

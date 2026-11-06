@@ -69,17 +69,11 @@ describe("ROLE_AGENTS", () => {
     // The planner's bullet, backend.md and roles/ui.md all send the reader to the shared rules for which files are the UI developer's. The file is
     // the repo's own Seed, so only that the section exists and has text of its own is checked, not its wording: the Seed ships the heading with
     // only a comment under it, which a repo that opted in and edited nothing must not pass.
-    // Comments go first, an unclosed one running to the end of the file as Markdown hides it, so a comment holding a "#" line neither hides the
-    // heading's real end nor leaves half a comment behind. The section then ends at the next heading of its own level or a higher one, so
-    // sub-headings under it are part of it.
-    // A fenced block or a code span is text, so a literal "<!--" in one neither opens a comment nor hides the heading after it: both are masked first.
-    const rules = readFileSync(file("roles/shared-rules.md"), "utf8")
-      .replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[`~]*[ \t]*$|$(?![\s\S]))/gm, "X")
-      .replace(/(`+)[^`\n]*?\1(?!`)/g, "X")
-      .replace(/<!--[\s\S]*?(?:-->|$)/g, "");
+    // The section ends at the next heading of its own level or a higher one, so sub-headings under it are part of it.
+    const rules = visibleMarkdown(readFileSync(file("roles/shared-rules.md"), "utf8"));
     const heading = /^(#{1,6})\s+UI developer\s*$/m.exec(rules);
 
-    assert.ok(heading, 'roles/shared-rules.md has no "## UI developer" section outside a comment (an unclosed <!-- hides everything after it): add one that names the UI files, or the developer and the ui role each leave them to the other');
+    assert.ok(heading, 'roles/shared-rules.md has no "## UI developer" section outside a comment or an unclosed code fence (either hides everything after it): add one that names the UI files, or the developer and the ui role each leave them to the other');
 
     const afterHeading = rules.slice(heading.index + heading[0].length);
     const body = (afterHeading.split(new RegExp(`^#{1,${heading[1]!.length}}\\s`, "m"))[0] ?? "").trim();
@@ -520,3 +514,49 @@ describe("the PR watcher", () => {
     assert.equal(wouldSkip("Look at <!-- sandcastle:give-up --> in the log."), 1);
   });
 });
+
+// The text of a Markdown file as a reader sees it, for the one check above: a comment that opens a line (as the Seed's does) is dropped, an unclosed
+// one running to the end of the file; a fenced block is replaced by "X", an unclosed fence too, since it runs to the end; and everything else, a
+// "<!--" inside a code span included, is left as written, so it neither opens a comment nor hides the heading after it. Read line by line, so a "#"
+// line inside a comment or a fence is never taken for a heading.
+function visibleMarkdown(markdown: string): string {
+  const out: string[] = [];
+  let fence: RegExp | undefined;
+  let inComment = false;
+
+  for (const line of markdown.split(/\r?\n/)) {
+    if (fence) {
+      if (fence.test(line)) fence = undefined;
+      continue;
+    }
+
+    let rest = line;
+    if (inComment) {
+      const end = rest.indexOf("-->");
+      if (end === -1) continue;
+      inComment = false;
+      rest = rest.slice(end + 3);
+    } else {
+      const opener = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      // A backtick fence's info string holds no backtick, or the line is a code span.
+      if (opener && !(opener[1]!.startsWith("`") && opener[2]!.includes("`"))) {
+        const marker = opener[1]![0]!;
+        fence = new RegExp(`^ {0,3}\\${marker}{${opener[1]!.length},}\\s*$`);
+        out.push("X");
+        continue;
+      }
+    }
+
+    if (/^ {0,3}<!--/.test(rest)) {
+      rest = rest.replace(/<!--.*?-->/g, "");
+      const open = rest.indexOf("<!--");
+      if (open !== -1) {
+        inComment = true;
+        rest = rest.slice(0, open);
+      }
+    }
+    out.push(rest);
+  }
+
+  return out.join("\n");
+}

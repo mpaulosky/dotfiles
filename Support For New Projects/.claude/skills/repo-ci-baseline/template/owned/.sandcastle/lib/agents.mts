@@ -178,18 +178,40 @@ export function roleOptions(role: AnyRole, timeout: (ms: number) => AbortSignal 
 let sharedRules: string | undefined;
 let repoSkills: string | undefined;
 
-// Add .sandcastle/roles/shared-rules.md and the trimmed text of
-// .sandcastle/roles/skills.md (the repo's # SKILLS block, empty when it mounts
-// none) to a prompt file's arguments, as {{SHARED_RULES}} and {{REPO_SKILLS}}.
-// An inline prompt is left alone: Sandcastle rejects prompt arguments for one.
-// A missing file throws, as shared-rules.md's always has: both are Seed files.
+// The placeholder as Sandcastle matches it (its PLACEHOLDER_PATTERN allows spaces inside the braces).
+const REPO_SKILLS_PLACEHOLDER = /\{\{\s*REPO_SKILLS\s*\}\}/;
+
+// Add .sandcastle/roles/shared-rules.md as {{SHARED_RULES}} to a prompt file's
+// arguments, and the trimmed text of .sandcastle/roles/skills.md (the repo's
+// skills block, empty when it mounts none) as {{REPO_SKILLS}}, but only to a
+// prompt that has that placeholder: Sandcastle logs a warning for every
+// argument a prompt doesn't reference, and only tester, backend and ui do. An
+// empty string is a fine value (Sandcastle refuses only null and undefined). A
+// prompt file that can't be read gets it too, so Sandcastle names the missing
+// file rather than a missing argument. An inline prompt is left alone:
+// Sandcastle rejects prompt arguments for one. A missing roles/ file throws,
+// as shared-rules.md's always has: both are Seed files.
 export function withSharedRules<T extends { prompt?: string; promptFile?: string; promptArgs?: sandcastle.PromptArgs }>(
   options: T,
 ): T & { promptArgs?: sandcastle.PromptArgs } {
   if (options.promptFile === undefined) return options;
   sharedRules ??= readFileSync(new URL("../roles/shared-rules.md", import.meta.url), "utf8");
   repoSkills ??= readFileSync(new URL("../roles/skills.md", import.meta.url), "utf8").trim();
-  return { ...options, promptArgs: { ...options.promptArgs, SHARED_RULES: sharedRules, REPO_SKILLS: repoSkills } };
+  const text = promptText(options.promptFile);
+  const referencesSkills = text === undefined || REPO_SKILLS_PLACEHOLDER.test(text);
+  return {
+    ...options,
+    promptArgs: { ...options.promptArgs, SHARED_RULES: sharedRules, ...(referencesSkills ? { REPO_SKILLS: repoSkills } : {}) },
+  };
+}
+
+// A prompt file's text, read the way Sandcastle reads it (relative to the working directory), or undefined when it can't be read.
+function promptText(promptFile: string): string | undefined {
+  try {
+    return readFileSync(promptFile, "utf8");
+  } catch {
+    return undefined;
+  }
 }
 
 export function runRole<T>(

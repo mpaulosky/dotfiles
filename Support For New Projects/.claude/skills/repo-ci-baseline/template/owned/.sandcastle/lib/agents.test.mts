@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import type * as sandcastle from "@ai-hero/sandcastle";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
@@ -313,6 +315,64 @@ describe("withSharedRules", () => {
     const { promptArgs } = withSharedRules({ promptFile: "./plan.md", promptArgs: { TASK_ID: "7", ISSUES_JSON: "[]" } });
 
     assert.deepEqual(promptArgs, { TASK_ID: "7", ISSUES_JSON: "[]", SHARED_RULES: sharedRules, REPO_SKILLS: repoSkills });
+  });
+
+  // Sandcastle warns "provided but not referenced" for every argument a prompt doesn't use, so REPO_SKILLS goes only to a prompt that has the placeholder.
+  describe("REPO_SKILLS", () => {
+    const withPrompt = (text: string | undefined, run: (promptFile: string) => void) => {
+      const dir = mkdtempSync(join(tmpdir(), "prompt-"));
+      try {
+        const promptFile = join(dir, "prompt.md");
+        if (text !== undefined) writeFileSync(promptFile, text);
+        run(promptFile);
+      } finally {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+    };
+
+    it("is left out for a prompt that doesn't reference it, so Sandcastle logs no warning", () => {
+      withPrompt("# TASK\n\n{{SHARED_RULES}}\n", (promptFile) => {
+        assert.deepEqual(withSharedRules({ promptFile }).promptArgs, { SHARED_RULES: sharedRules });
+      });
+    });
+
+    it("is passed to a prompt that references it, with or without spaces inside the braces", () => {
+      for (const placeholder of ["{{REPO_SKILLS}}", "{{ REPO_SKILLS }}", "{{\tREPO_SKILLS\n}}"]) {
+        withPrompt(`# TASK\n\n${placeholder}\n\n{{SHARED_RULES}}\n`, (promptFile) => {
+          assert.deepEqual(withSharedRules({ promptFile }).promptArgs, { SHARED_RULES: sharedRules, REPO_SKILLS: repoSkills }, placeholder);
+        });
+      }
+    });
+
+    it("is not matched by a longer name, a lowercase name or one cut short", () => {
+      for (const text of ["{{REPO_SKILLS_X}}", "{{XREPO_SKILLS}}", "{{repo_skills}}", "{REPO_SKILLS}", "{{REPO_SKILLS}", "REPO_SKILLS"]) {
+        withPrompt(text, (promptFile) => {
+          assert.equal(withSharedRules({ promptFile }).promptArgs?.REPO_SKILLS, undefined, text);
+        });
+      }
+    });
+
+    it("is passed when the prompt file can't be read, so Sandcastle reports the missing file rather than a missing argument", () => {
+      withPrompt(undefined, (promptFile) => {
+        assert.equal(withSharedRules({ promptFile }).promptArgs?.REPO_SKILLS, repoSkills);
+      });
+    });
+
+    it("is passed to the prompts that carry the placeholder in the Template, and left off the rest", () => {
+      const sandcastle = new URL("../", import.meta.url).pathname;
+      const has = (file: string) => withSharedRules({ promptFile: `${sandcastle}${file}` }).promptArgs?.REPO_SKILLS !== undefined;
+
+      for (const file of ["roles/tester.md", "roles/backend.md"]) assert.equal(has(file), true, file);
+      for (const file of ["roles/architect.md", "roles/scribe.md", "roles/gate-fixer.md", "roles/follow-up.md", "plan-prompt.md", "review-prompt.md", "intake-prompt.md", "critique-prompt.md"]) {
+        assert.equal(has(file), false, file);
+      }
+    });
+
+    it("keeps the argument empty, not undefined, when roles/skills.md holds nothing, since Sandcastle accepts an empty string and refuses undefined", () => {
+      withPrompt("{{REPO_SKILLS}}", (promptFile) => {
+        assert.equal(typeof withSharedRules({ promptFile }).promptArgs?.REPO_SKILLS, "string");
+      });
+    });
   });
 
   it("leaves an inline prompt alone, since Sandcastle rejects arguments for one", () => {

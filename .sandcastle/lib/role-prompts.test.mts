@@ -644,3 +644,18 @@ describe("the docs about the Owned prompts", () => {
     assert.match(comment, /`roles\/skills\.md`, which the host passes to the tester, backend and ui prompts as \{\{REPO_SKILLS\}\}/);
   });
 });
+
+// The README is public. The Gist it says the shell profiles moved to is secret: anyone with its URL can read it, so the README names the Gist
+// and never links it.
+describe("the public README", () => {
+  const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+
+  it("does not link a Gist", () => {
+    assert.doesNotMatch(readme, /gist\.github\.com/i);
+    assert.doesNotMatch(readme, /gist\.githubusercontent\.com/i);
+  });
+
+  it("still says the shell profiles and prompt themes moved to a Gist", () => {
+    assert.match(readme.replace(/\s+/g, " "), /shell profiles and prompt themes moved to a (private |secret )?Gist/);
+  });
+});

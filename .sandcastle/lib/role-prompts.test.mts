@@ -644,3 +644,82 @@ describe("the docs about the Owned prompts", () => {
     assert.match(comment, /`roles\/skills\.md`, which the host passes to the tester, backend and ui prompts as \{\{REPO_SKILLS\}\}/);
   });
 });
+
+// The README is public. The Gist it says the shell profiles moved to is secret: anyone with its URL or id can read it. So the README may name it
+// in one phrase, "a secret Gist", and may not say "gist" anywhere else: the ways a plain-prose README is likely to reach a Gist (a host, the API, a
+// gh command with flags or quotes) hold that word, so none can be written without failing. Two more are checked on their own: a bare 32-digit hex
+// id (it opens the Gist at gist.github.com/<id>; a longer hex run, such as a 40-digit commit sha, is not one) and a git.io short link. An obfuscated
+// URL (a percent- or entity-encoded host, another shortener) is not caught: the guard is for accidents in a README the owner writes by hand.
+// The ids below are made up.
+describe("the public README", () => {
+  const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+
+  // Every blockquote marker on a line (they nest) and the line break are not part of the sentence.
+  const sentence = (text: string) => text.replace(/^(?:[ \t]*>)+[ \t]?/gm, "").replace(/\s+/g, " ");
+  const reachesAGist = (text: string) => {
+    const flat = sentence(text);
+
+    return (
+      /gist/i.test(flat.replace(/\ba secret gist\b/gi, "")) ||
+      /(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])/i.test(flat) ||
+      /(?<![\w.-])git\.io\//i.test(flat)
+    );
+  };
+
+  it("catches every way of reaching a Gist", () => {
+    for (const leak of [
+      "https://gist.github.com/someone/abc",
+      "[Gist](HTTPS://GIST.GITHUB.COM/x)",
+      "https://gist.githubusercontent.com/x/raw",
+      "https://api.github.com/gists/abc",
+      "run gh api gists/abc",
+      "run gh api 'gists/abc'",
+      'run gh api "/gists/abc"',
+      "run gh api -X GET gists/abc",
+      "run gh gist view abc",
+      "gh GIST clone abc",
+      "gh gist --web view abc",
+      "a gist viewer",
+      "a secret gistx",
+      "an extra secret Gist",
+      "https://git.io/abc",
+      "id 0123456789abcdef0123456789abcdef",
+      "id 0123456789ABCDEF0123456789ABCDEF",
+      "(0123456789abcdef0123456789abcdef)",
+      "gist_0123456789abcdef0123456789abcdef",
+      "zz0123456789abcdef0123456789abcdefzz",
+      "> run gh gist\n> view abc",
+      "run gh gist\nview abc",
+      "> > run gh gist\n> > view abc",
+      ">> run gh api\n>> gists/abc",
+      "\t> run gh gist\n\t>\tview abc",
+      "> run gh gist\r\n> view abc",
+      "run gh gist\rview abc",
+    ]) assert.equal(reachesAGist(leak), true, leak);
+  });
+
+  it("allows the one phrase, and does not take other hex or host text for a link", () => {
+    assert.equal(reachesAGist("The shell profiles moved to a secret Gist."), false);
+    assert.equal(reachesAGist("moved to A SECRET GIST."), false);
+    assert.equal(reachesAGist("> moved to a\n>   secret Gist."), false);
+    assert.equal(reachesAGist("a 31-digit id 0123456789abcdef0123456789abcde"), false);
+    assert.equal(reachesAGist("a 33-digit run 0123456789abcdef0123456789abcdef0"), false);
+    assert.equal(reachesAGist("a commit sha 0123456789abcdef0123456789abcdef01234567"), false);
+    assert.equal(reachesAGist("legit.io/x, digit.io/y, my-git.io/z and foo.git.io/w"), false);
+  });
+
+  it("does not reach a Gist", () => {
+    assert.equal(reachesAGist(readme), false);
+  });
+
+  it("reads a sentence the same when the blockquote wraps it", () => {
+    assert.equal(sentence("> - moved to a\n>   secret Gist."), "- moved to a secret Gist.");
+    assert.equal(sentence("> moved to\n> a secret\n> Gist"), "moved to a secret Gist");
+    assert.equal(sentence("> > moved to\n> > a secret\n>> Gist"), "moved to a secret Gist");
+    assert.equal(sentence("\t> moved to\n>\ta secret\r\n> Gist"), "moved to a secret Gist");
+  });
+
+  it("still says the shell profiles and prompt themes moved to a secret Gist", () => {
+    assert.match(sentence(readme), /shell profiles and prompt themes moved to a secret Gist/);
+  });
+});

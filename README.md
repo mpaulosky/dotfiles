@@ -1,5 +1,15 @@
 # dotfiles
 
+> **This repository is retired and is being archived.** Nothing here is maintained.
+>
+> - The repo-ci-baseline Template, the shared skills and the starting-point files moved to
+>   [mpaulosky/Application_Factory](https://github.com/mpaulosky/Application_Factory).
+> - The shell profiles and prompt themes moved to a secret Gist.
+> - Not carried over to either place, and unmaintained: the systemd sync script, the dev container, `.copilot/` (the Copilot skills
+>   and MCP config) and the Dygma keyboard layers. They stay in this repository as history.
+>
+> The rest of this file is kept for history and may be out of date.
+
 Configuration and support files for quickly bootstrapping .NET projects and developer environments.
 
 > **Purpose:** This repository is a **template and support-file library** — it holds

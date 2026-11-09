@@ -650,11 +650,14 @@ describe("the docs about the Owned prompts", () => {
 describe("the public README", () => {
   const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
 
-  // The hosts, the API form, a gh command, a short link, and a bare 32-digit hex id (a Gist's id, which opens it at gist.github.com/<id>).
-  const reachesAGist = (text: string) =>
-    /gist\.github(usercontent)?\.com|api\.github\.com\/gists|git\.io\/|\bgist\s+(view|clone)\b|\b[0-9a-f]{32}\b/i.test(text);
-  // A blockquote or list marker and the line break are not part of the sentence.
+  // A blockquote marker and the line break are not part of the sentence.
   const sentence = (text: string) => text.replace(/^[ \t]*>[ \t]?/gm, "").replace(/\s+/g, " ");
+  // The hosts, the API forms, a gh command, a short link, and a bare 32-digit hex id (a Gist's id, which opens it at gist.github.com/<id>). A longer
+  // hex run, such as a 40-digit commit sha, is not a Gist id. The text is read as a sentence, so a blockquote wrap can't split a command.
+  const reachesAGist = (text: string) =>
+    /gist\.github(usercontent)?\.com|api\.github\.com\/gists|\bapi\s+\/?gists\/|(?<![\w.-])git\.io\/|\bgist\s+(view|clone|edit|fork)\b|\b[0-9a-f]{32}\b/i.test(
+      sentence(text),
+    );
 
   it("catches every way of reaching a Gist", () => {
     for (const leak of [
@@ -662,16 +665,25 @@ describe("the public README", () => {
       "[Gist](HTTPS://GIST.GITHUB.COM/x)",
       "https://gist.githubusercontent.com/x/raw",
       "https://api.github.com/gists/abc",
+      "run gh api gists/abc",
       "run gh gist view abc",
       "gh GIST clone abc",
+      "gh gist edit abc",
+      "gh gist fork abc",
       "https://git.io/abc",
       "id 0123456789abcdef0123456789abcdef",
+      "(0123456789abcdef0123456789abcdef)",
+      "> run gh gist\n> view abc",
+      "run gh gist\nview abc",
     ]) assert.equal(reachesAGist(leak), true, leak);
   });
 
-  it("does not take prose that names a Gist, or a short hex string, for a link", () => {
+  it("does not take prose that names a Gist, or other hex and host text, for a link", () => {
     assert.equal(reachesAGist("The shell profiles moved to a secret Gist."), false);
-    assert.equal(reachesAGist("commit f587945e and a 31-digit id 0123456789abcdef0123456789abcde"), false);
+    assert.equal(reachesAGist("a 31-digit id 0123456789abcdef0123456789abcde"), false);
+    assert.equal(reachesAGist("a 33-digit run 0123456789abcdef0123456789abcdef0"), false);
+    assert.equal(reachesAGist("a commit sha 0123456789abcdef0123456789abcdef01234567"), false);
+    assert.equal(reachesAGist("legit.io/x and digit.io/y"), false);
   });
 
   it("does not link a Gist", () => {

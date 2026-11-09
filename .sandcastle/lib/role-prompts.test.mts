@@ -645,19 +645,24 @@ describe("the docs about the Owned prompts", () => {
   });
 });
 
-// The README is public. The Gist it says the shell profiles moved to is secret: anyone with its URL or id can read it, so the README names the
-// Gist and never links it, by any of the ways that reach it. The ids below are made up.
+// The README is public. The Gist it says the shell profiles moved to is secret: anyone with its URL or id can read it. So the README may name it
+// in one phrase, "a secret Gist", and may not say "gist" anywhere else: every way of reaching a Gist (a host, the API, a gh command with flags or
+// quotes) holds that word, so none can be written without failing. Two ways don't, and are checked on their own: a bare 32-digit hex id (it opens
+// the Gist at gist.github.com/<id>; a longer hex run, such as a 40-digit commit sha, is not one) and a git.io short link. The ids below are made up.
 describe("the public README", () => {
   const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
 
   // Every blockquote marker on a line (they nest) and the line break are not part of the sentence.
   const sentence = (text: string) => text.replace(/^(?:[ \t]*>)+[ \t]?/gm, "").replace(/\s+/g, " ");
-  // The hosts, the API forms, a gh command, a short link, and a bare 32-digit hex id (a Gist's id, which opens it at gist.github.com/<id>). A longer
-  // hex run, such as a 40-digit commit sha, is not a Gist id. The text is read as a sentence, so a blockquote wrap can't split a command.
-  const reachesAGist = (text: string) =>
-    /gist\.github(usercontent)?\.com|api\.github\.com\/gists|\bapi\s+\/?gists\/|(?<![\w.-])git\.io\/|\bgist\s+(view|clone|edit|fork|delete|rename)\b|\b[0-9a-f]{32}\b/i.test(
-      sentence(text),
+  const reachesAGist = (text: string) => {
+    const flat = sentence(text);
+
+    return (
+      /gist/i.test(flat.replace(/\ba secret gist\b/gi, "")) ||
+      /(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])/i.test(flat) ||
+      /(?<![\w.-])git\.io\//i.test(flat)
     );
+  };
 
   it("catches every way of reaching a Gist", () => {
     for (const leak of [
@@ -666,32 +671,41 @@ describe("the public README", () => {
       "https://gist.githubusercontent.com/x/raw",
       "https://api.github.com/gists/abc",
       "run gh api gists/abc",
-      "run gh api /gists/abc",
-      "gh gist delete abc",
-      "gh gist rename abc new",
+      "run gh api 'gists/abc'",
+      'run gh api "/gists/abc"',
+      "run gh api -X GET gists/abc",
       "run gh gist view abc",
       "gh GIST clone abc",
-      "gh gist edit abc",
-      "gh gist fork abc",
+      "gh gist --web view abc",
+      "a gist viewer",
+      "a secret gistx",
       "https://git.io/abc",
       "id 0123456789abcdef0123456789abcdef",
+      "id 0123456789ABCDEF0123456789ABCDEF",
       "(0123456789abcdef0123456789abcdef)",
+      "gist_0123456789abcdef0123456789abcdef",
+      "zz0123456789abcdef0123456789abcdefzz",
       "> run gh gist\n> view abc",
       "run gh gist\nview abc",
       "> > run gh gist\n> > view abc",
       ">> run gh api\n>> gists/abc",
+      "\t> run gh gist\n\t>\tview abc",
+      "> run gh gist\r\n> view abc",
+      "run gh gist\rview abc",
     ]) assert.equal(reachesAGist(leak), true, leak);
   });
 
-  it("does not take prose that names a Gist, or other hex and host text, for a link", () => {
+  it("allows the one phrase, and does not take other hex or host text for a link", () => {
     assert.equal(reachesAGist("The shell profiles moved to a secret Gist."), false);
+    assert.equal(reachesAGist("moved to A SECRET GIST."), false);
+    assert.equal(reachesAGist("> moved to a\n>   secret Gist."), false);
     assert.equal(reachesAGist("a 31-digit id 0123456789abcdef0123456789abcde"), false);
     assert.equal(reachesAGist("a 33-digit run 0123456789abcdef0123456789abcdef0"), false);
     assert.equal(reachesAGist("a commit sha 0123456789abcdef0123456789abcdef01234567"), false);
-    assert.equal(reachesAGist("legit.io/x and digit.io/y"), false);
+    assert.equal(reachesAGist("legit.io/x, digit.io/y, my-git.io/z and foo.git.io/w"), false);
   });
 
-  it("does not link a Gist", () => {
+  it("does not reach a Gist", () => {
     assert.equal(reachesAGist(readme), false);
   });
 
@@ -699,6 +713,7 @@ describe("the public README", () => {
     assert.equal(sentence("> - moved to a\n>   secret Gist."), "- moved to a secret Gist.");
     assert.equal(sentence("> moved to\n> a secret\n> Gist"), "moved to a secret Gist");
     assert.equal(sentence("> > moved to\n> > a secret\n>> Gist"), "moved to a secret Gist");
+    assert.equal(sentence("\t> moved to\n>\ta secret\r\n> Gist"), "moved to a secret Gist");
   });
 
   it("still says the shell profiles and prompt themes moved to a secret Gist", () => {

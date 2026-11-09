@@ -646,9 +646,11 @@ describe("the docs about the Owned prompts", () => {
 });
 
 // The README is public. The Gist it says the shell profiles moved to is secret: anyone with its URL or id can read it. So the README may name it
-// in one phrase, "a secret Gist", and may not say "gist" anywhere else: every way of reaching a Gist (a host, the API, a gh command with flags or
-// quotes) holds that word, so none can be written without failing. Two ways don't, and are checked on their own: a bare 32-digit hex id (it opens
-// the Gist at gist.github.com/<id>; a longer hex run, such as a 40-digit commit sha, is not one) and a git.io short link. The ids below are made up.
+// in one phrase, "a secret Gist", and may not say "gist" anywhere else: the ways a plain-prose README is likely to reach a Gist (a host, the API, a
+// gh command with flags or quotes) hold that word, so none can be written without failing. Two more are checked on their own: a bare 32-digit hex
+// id (it opens the Gist at gist.github.com/<id>; a longer hex run, such as a 40-digit commit sha, is not one) and a git.io short link. An obfuscated
+// URL (a percent- or entity-encoded host, another shortener) is not caught: the guard is for accidents in a README the owner writes by hand.
+// The ids below are made up.
 describe("the public README", () => {
   const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
 
@@ -679,6 +681,7 @@ describe("the public README", () => {
       "gh gist --web view abc",
       "a gist viewer",
       "a secret gistx",
+      "an extra secret Gist",
       "https://git.io/abc",
       "id 0123456789abcdef0123456789abcdef",
       "id 0123456789ABCDEF0123456789ABCDEF",

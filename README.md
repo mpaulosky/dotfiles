@@ -4,7 +4,7 @@
 >
 > - The repo-ci-baseline Template, the shared skills and the starting-point files moved to
 >   [mpaulosky/Application_Factory](https://github.com/mpaulosky/Application_Factory).
-> - The shell profiles and prompt themes moved to a private Gist.
+> - The shell profiles and prompt themes moved to a secret Gist.
 > - Not carried over to either place, and unmaintained: the systemd sync script, the dev container, `.copilot/` (the Copilot skills
 >   and MCP config) and the Dygma keyboard layers. They stay in this repository as history.
 >

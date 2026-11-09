@@ -650,12 +650,12 @@ describe("the docs about the Owned prompts", () => {
 describe("the public README", () => {
   const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
 
-  // A blockquote marker and the line break are not part of the sentence.
-  const sentence = (text: string) => text.replace(/^[ \t]*>[ \t]?/gm, "").replace(/\s+/g, " ");
+  // Every blockquote marker on a line (they nest) and the line break are not part of the sentence.
+  const sentence = (text: string) => text.replace(/^(?:[ \t]*>)+[ \t]?/gm, "").replace(/\s+/g, " ");
   // The hosts, the API forms, a gh command, a short link, and a bare 32-digit hex id (a Gist's id, which opens it at gist.github.com/<id>). A longer
   // hex run, such as a 40-digit commit sha, is not a Gist id. The text is read as a sentence, so a blockquote wrap can't split a command.
   const reachesAGist = (text: string) =>
-    /gist\.github(usercontent)?\.com|api\.github\.com\/gists|\bapi\s+\/?gists\/|(?<![\w.-])git\.io\/|\bgist\s+(view|clone|edit|fork)\b|\b[0-9a-f]{32}\b/i.test(
+    /gist\.github(usercontent)?\.com|api\.github\.com\/gists|\bapi\s+\/?gists\/|(?<![\w.-])git\.io\/|\bgist\s+(view|clone|edit|fork|delete|rename)\b|\b[0-9a-f]{32}\b/i.test(
       sentence(text),
     );
 
@@ -666,6 +666,9 @@ describe("the public README", () => {
       "https://gist.githubusercontent.com/x/raw",
       "https://api.github.com/gists/abc",
       "run gh api gists/abc",
+      "run gh api /gists/abc",
+      "gh gist delete abc",
+      "gh gist rename abc new",
       "run gh gist view abc",
       "gh GIST clone abc",
       "gh gist edit abc",
@@ -675,6 +678,8 @@ describe("the public README", () => {
       "(0123456789abcdef0123456789abcdef)",
       "> run gh gist\n> view abc",
       "run gh gist\nview abc",
+      "> > run gh gist\n> > view abc",
+      ">> run gh api\n>> gists/abc",
     ]) assert.equal(reachesAGist(leak), true, leak);
   });
 
@@ -693,6 +698,7 @@ describe("the public README", () => {
   it("reads a sentence the same when the blockquote wraps it", () => {
     assert.equal(sentence("> - moved to a\n>   secret Gist."), "- moved to a secret Gist.");
     assert.equal(sentence("> moved to\n> a secret\n> Gist"), "moved to a secret Gist");
+    assert.equal(sentence("> > moved to\n> > a secret\n>> Gist"), "moved to a secret Gist");
   });
 
   it("still says the shell profiles and prompt themes moved to a secret Gist", () => {
